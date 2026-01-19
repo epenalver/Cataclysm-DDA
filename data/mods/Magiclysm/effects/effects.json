@@ -1883,6 +1883,15 @@
   },
   {
     "type": "effect_type",
+    "id": "effect_icy_water_walking",
+    "name": [ "Kelvinist's Icy Glide" ],
+    "desc": [ "Water temporarily freezes beneath you, allowing you to walk on its surface." ],
+    "rating": "good",
+    "remove_message": "You can no longer walk on the water.",
+    "flags": [ "ITEM_WATERPROOFING", "WATERWALKING" ]
+  },
+  {
+    "type": "effect_type",
     "id": "effect_druid_shifter_raven_form_levitation",
     "//": "Hidden effect, used because LEVITATION flag does not work on mutations",
     "name": [ "" ],
