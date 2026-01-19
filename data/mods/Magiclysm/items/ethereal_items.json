@@ -123,6 +123,18 @@
     "passive_effects": [ { "has": "WORN", "condition": "ALWAYS", "values": [ { "value": "MOVE_COST", "add": -5 } ] } ]
   },
   {
+    "copy-from": "ice_gliders",
+    "id": "enhanced_ice_gliders",
+    "type": "ITEM",
+    "subtypes": [ "ARMOR", "ARTIFACT" ],
+    "name": { "str_sp": "slick icy coatings" },
+    "description": "A magical slick icy coating on your feet.  While quite fast on flat floors, they make it difficult to move on rough terrain. This is an improved version that temporarily freezes liquid water under your feet, allowing you to cross rivers and lakes if you hustle.",
+    "flags": [ "ITEM_WATERPROOFING", "WATERWALKING" ],
+    "passive_effects": [
+      { "has": "WORN", "condition": "ALWAYS", "ench_effects": [ { "effect": "effect_icy_water_walking", "intensity": 1 } ] }
+    ]
+  },
+  {
     "type": "ITEM",
     "subtypes": [ "ARTIFACT" ],
     "id": "stormhammer",
