@@ -75,7 +75,7 @@ extern std::map<std::string, std::list<input_event>> quick_shortcuts_map;
  * Changes that break backwards compatibility should bump this number, so the game can
  * load a legacy format loader.
  */
-const int savegame_version = 38;
+const int savegame_version = 39;
 
 /*
  * This is a global set by detected version header in .sav, maps.txt, or overmap.
@@ -255,6 +255,7 @@ void game::unserialize_impl( const JsonObject &data )
     std::string loaded_dimension_prefix;
     if( data.read( "dimension_prefix", loaded_dimension_prefix ) ) {
         dimension_prefix = loaded_dimension_prefix;
+        load_dimension_data();
     }
 
     data.read( "auto_travel_mode", auto_travel_mode );
@@ -458,39 +459,6 @@ void overmap::unserialize( std::istream &fin )
     unserialize( jsin.get_object() );
 }
 
-// In global scope for testing
-// NOLINTNEXTLINE(cata-static-declarations)
-std::string base64_encode_bitset( const std::bitset<576> &bitset_to_encode );
-std::string base64_encode_bitset( const std::bitset<576> &bitset_to_encode )
-{
-    std::string raw_bitset_data( 72, '\0' );
-    for( uint64_t i = 0; i < 9; ++i ) {
-        uint64_t bits = 0;
-        for( size_t j = 0; j < sizeof( bits ) * 8; ++j ) {
-            if( bitset_to_encode[( i * 64 ) + j ] ) {
-                bits |= 1ULL << j;
-            }
-        }
-        memcpy( &raw_bitset_data[ i * 8 ], &bits, sizeof( bits ) );
-    }
-    return base64_encode( raw_bitset_data );
-}
-
-// In global scope for testing
-// NOLINTNEXTLINE(cata-static-declarations)
-void base64_decode_bitset( const std::string &packed_bitset, std::bitset<576> &destination_bitset );
-void base64_decode_bitset( const std::string &packed_bitset, std::bitset<576> &destination_bitset )
-{
-    std::string decoded_string = base64_decode( packed_bitset );
-    for( int i = 0; i < 9; i++ ) {
-        uint64_t bits;
-        memcpy( &bits, &decoded_string[( 8 - i ) * 8], sizeof( bits ) );
-        std::bitset<576> temp_bitset( bits );
-        destination_bitset <<= 64;
-        destination_bitset |= temp_bitset;
-    }
-}
-
 void overmap::unserialize( const JsonObject &jsobj )
 {
     // These must be read in this order.
@@ -691,7 +659,7 @@ void overmap::unserialize( const JsonObject &jsobj )
             JsonArray monster_map_json = om_member;
             while( monster_map_json.has_more() ) {
                 tripoint_abs_ms monster_location;
-                std::unordered_map<tripoint_abs_ms, horde_entity>::iterator result;
+                std::optional<std::unordered_map<tripoint_abs_ms, horde_entity>::iterator> result;
                 monster_location.deserialize( monster_map_json.next_value() );
                 point_abs_om omp;
                 tripoint_om_sm monster_submap;
@@ -706,10 +674,18 @@ void overmap::unserialize( const JsonObject &jsobj )
                     result = hordes.spawn_entity( monster_location, new_monster );
                 }
 
-                result->second.destination.deserialize( monster_map_json.next_value() );
-                result->second.tracking_intensity = monster_map_json.next_int();
-                result->second.last_processed.deserialize( monster_map_json.next_value() );
-                result->second.moves = monster_map_json.next_int();
+                if( result.has_value() ) {
+                    ( *result )->second.destination.deserialize( monster_map_json.next_value() );
+                    ( *result )->second.tracking_intensity = monster_map_json.next_int();
+                    ( *result )->second.last_processed.deserialize( monster_map_json.next_value() );
+                    ( *result )->second.moves = monster_map_json.next_int();
+                } else {
+                    // We deserialized something nasty, skip the rest of the stored values
+                    monster_map_json.next_value();
+                    monster_map_json.next_int();
+                    monster_map_json.next_value();
+                    monster_map_json.next_int();
+                }
             }
         } else if( name == "map_data" ) {
             JsonArray map_data_json = om_member;
@@ -2027,8 +2003,7 @@ void overmap_global_state::serialize( JsonOut &json ) const
     json.write_as_array( placed_unique_specials );
     json.member( "overmap_count", overmap_count );
     json.member( "unique_special_count", unique_special_count );
-    json.member( "overmap_highway_intersections", highway_intersections );
-    json.member( "overmap_highway_offset", highway_global_offset );
+    json.member( "overmap_highway_intersection_grid", highway_intersections );
     json.member( "major_river_count", major_river_count );
 
     json.end_object();
@@ -2046,8 +2021,18 @@ void overmap_global_state::deserialize( const JsonObject &json )
     json.read( "overmap_count", overmap_count );
 
     highway_intersections.clear();
-    json.read( "overmap_highway_intersections", highway_intersections );
-    json.read( "overmap_highway_offset", highway_global_offset );
+    //TODO: remove legacy loading in 0.J
+    if( json.has_member( "overmap_highway_intersections" ) ) {
+        std::map<std::string, overmap_feature_grid_node> feature_grid;
+        json.read( "overmap_highway_intersections", feature_grid );
+        point_abs_om highway_global_offset;
+        json.read( "overmap_highway_offset", highway_global_offset );
+
+        highway_intersections.set_feature_grid( feature_grid );
+        highway_intersections.set_grid_origin( highway_global_offset );
+    } else {
+        json.read( "overmap_highway_intersection_grid", highway_intersections );
+    }
     json.read( "major_river_count", major_river_count );
 }
 

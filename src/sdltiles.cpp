@@ -53,6 +53,7 @@
 #include "hash_utils.h"
 #include "horde_entity.h"
 #include "input.h"
+#include "input_context.h"
 #include "json.h"
 #include "line.h"
 #include "map.h"
@@ -537,6 +538,8 @@ SDL_Rect get_android_render_rect( float DisplayBufferWidth, float DisplayBufferH
 
 #endif
 
+static void draw_gamepad_radial_menu();
+
 void refresh_display()
 {
     needupdate = false;
@@ -565,6 +568,7 @@ void refresh_display()
     }
     draw_virtual_joystick();
 #endif
+    draw_gamepad_radial_menu();
     SDL_RenderPresent( renderer.get() );
     SetRenderTarget( renderer, display_buffer );
 }
@@ -890,7 +894,7 @@ void cata_tiles::draw_om( const point &dest, const tripoint_abs_omt &center_abs_
                     }
                 }
                 if( showhordes && los ) {
-                    const int horde_size = overmap_buffer.get_horde_size( omp );
+                    const int horde_size = overmap_buffer.get_horde_size( omp, horde_map_flavors::active );
                     if( horde_size >= HORDE_VISIBILITY_SIZE ) {
                         // Scale down the range of horde population, which can be 1-576 to a range of 1-10
                         // These thresholds are generated with pow( sprite_size, 2.4 ).
@@ -2491,7 +2495,103 @@ void draw_virtual_joystick()
     RenderCopy( renderer, touch_joystick, NULL, &dstrect );
 
 }
+#endif
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+static void draw_gamepad_radial_menu()
+{
+    if( !gamepad::is_active() || !gamepad::is_alt_held() ) {
+        return;
+    }
+
+    int stick_idx = -1;
+    gamepad::direction selected_dir = gamepad::direction::NONE;
+    if( gamepad::is_radial_left_open() ) {
+        stick_idx = 0;
+        selected_dir = gamepad::get_radial_left_direction();
+    } else if( gamepad::is_radial_right_open() ) {
+        stick_idx = 1;
+        selected_dir = gamepad::get_radial_right_direction();
+    }
+
+    if( stick_idx == -1 ) {
+        return;
+    }
+
+    input_context *ctxt = input_context::input_context_stack.back();
+    if( !ctxt ) {
+        return;
+    }
+
+    int w;
+    int h;
+    SDL_GetRendererOutputSize( renderer.get(), &w, &h );
+
+    // Draw a semi-transparent black background over the whole screen
+    SetRenderDrawBlendMode( renderer, SDL_BLENDMODE_BLEND );
+    geometry->rect( renderer, { 0, 0, w, h }, { 0, 0, 0, 150 } );
+    SetRenderDrawBlendMode( renderer, SDL_BLENDMODE_NONE );
+
+    const point center( w / 2, h / 2 );
+    const float radius = h * 0.8f / 2.0f;
+
+    // Scale font relative to window height.
+    // Base scale 1.0 at 720p, for labels to be legible.
+    float text_scale = static_cast<float>( h ) / 720.0f * 1.0f;
+    SDL_RenderSetScale( renderer.get(), text_scale, text_scale );
+
+    static const std::vector<gamepad::direction> directions = {
+        gamepad::direction::N, gamepad::direction::NE, gamepad::direction::E,
+        gamepad::direction::SE, gamepad::direction::S, gamepad::direction::SW,
+        gamepad::direction::W, gamepad::direction::NW
+    };
+
+    for( size_t i = 0; i < directions.size(); ++i ) {
+        gamepad::direction dir = directions[i];
+        int joy_code = gamepad::direction_to_radial_joy( dir, stick_idx );
+        input_event event( joy_code, input_event_t::gamepad );
+        const std::string &action = ctxt->input_to_action( event );
+
+        std::string label;
+        if( action == "ERROR" ) {
+            label = "None";
+        } else {
+            label = ctxt->get_action_name( action );
+            if( label.empty() ) {
+                label = "None";
+            }
+        }
+
+        // Angle in radians (0 is North, clockwise)
+        float angle = i * ( 2.0f * M_PI / 8.0f );
+        float target_x = center.x + radius * std::sin( angle );
+        float target_y = center.y - radius * std::cos( angle );
+
+        // Convert target screen coords back to scaled coords for font drawing
+        const point draw( static_cast<int>( target_x / text_scale ) - ( font->width * utf8_width(
+                              label ) / 2 ),
+                          static_cast<int>( target_y / text_scale ) - ( font->height / 2 ) );
+
+        bool is_selected = dir == selected_dir;
+
+        if( is_selected ) {
+            // Draw selected item in yellow
+            font->OutputChar( renderer, geometry, label, draw,
+                              11, 1.0f );
+        } else {
+            font->OutputChar( renderer, geometry, label, draw,
+                              15, 1.0f );
+        }
+    }
+
+    // Restore scale
+    SDL_RenderSetScale( renderer.get(), 1.0f, 1.0f );
+}
+
+#if defined(__ANDROID__)
 void update_finger_repeat_delay()
 {
     float delta_x = finger_curr_x - finger_down_x;
@@ -2556,10 +2656,10 @@ void handle_finger_input( uint32_t ticks )
                 } else if( std::abs( delta_y ) < delta_x * 2.0f ) {
                     if( delta_y < 0 ) {
                         // swipe up-right
-                        last_input = input_event( JOY_RIGHTUP, input_event_t::gamepad );
+                        last_input = input_event( JOY_LS_UP_RIGHT, input_event_t::gamepad );
                     } else {
                         // swipe down-right
-                        last_input = input_event( JOY_RIGHTDOWN, input_event_t::gamepad );
+                        last_input = input_event( JOY_LS_DOWN_RIGHT, input_event_t::gamepad );
                     }
                 } else {
                     if( delta_y < 0 ) {
@@ -2577,11 +2677,11 @@ void handle_finger_input( uint32_t ticks )
                 } else if( std::abs( delta_y ) < -delta_x * 2.0f ) {
                     if( delta_y < 0 ) {
                         // swipe up-left
-                        last_input = input_event( JOY_LEFTUP, input_event_t::gamepad );
+                        last_input = input_event( JOY_LS_UP_LEFT, input_event_t::gamepad );
 
                     } else {
                         // swipe down-left
-                        last_input = input_event( JOY_LEFTDOWN, input_event_t::gamepad );
+                        last_input = input_event( JOY_LS_DOWN_LEFT, input_event_t::gamepad );
                     }
                 } else {
                     if( delta_y < 0 ) {
@@ -2719,23 +2819,21 @@ static void CheckMessages()
     }
 
     // Copy the current input context
-    if( !input_context::input_context_stack.empty() ) {
-        input_context *new_input_context = *--input_context::input_context_stack.end();
-        if( new_input_context && *new_input_context != touch_input_context ) {
+    input_context *new_input_context = input_context::input_context_stack.back();
+    if( new_input_context && *new_input_context != touch_input_context ) {
 
-            // If we were in an allow_text_entry input context, and text input is still active, and we're auto-managing keyboard, hide it.
-            if( touch_input_context.allow_text_entry &&
-                !new_input_context->allow_text_entry &&
-                !is_string_input( *new_input_context ) &&
-                SDL_IsTextInputActive() &&
-                get_option<bool>( "ANDROID_AUTO_KEYBOARD" ) ) {
-                StopTextInput();
-            }
-
-            touch_input_context = *new_input_context;
-            needupdate = true;
-            ui_manager::redraw_invalidated();
+        // If we were in an allow_text_entry input context, and text input is still active, and we're auto-managing keyboard, hide it.
+        if( touch_input_context.allow_text_entry &&
+            !new_input_context->allow_text_entry &&
+            !is_string_input( *new_input_context ) &&
+            SDL_IsTextInputActive() &&
+            get_option<bool>( "ANDROID_AUTO_KEYBOARD" ) ) {
+            StopTextInput();
         }
+
+        touch_input_context = *new_input_context;
+        needupdate = true;
+        ui_manager::redraw_invalidated();
     }
 
     bool is_default_mode = touch_input_context.get_category() == "DEFAULTMODE";
@@ -3251,7 +3349,15 @@ static void CheckMessages()
                 gamepad::handle_button_event( ev );
                 break;
             case SDL_CONTROLLERAXISMOTION:
-                gamepad::handle_axis_event( ev );
+                if( gamepad::handle_axis_event( ev ) ) {
+                    // Direction indicator changed, need to redraw
+                    needupdate = true;
+                    ui_manager::redraw_invalidated();
+                }
+                break;
+            case SDL_CONTROLLERDEVICEADDED:
+            case SDL_CONTROLLERDEVICEREMOVED:
+                gamepad::handle_device_event( ev );
                 break;
             case SDL_GAMEPAD_SCHEDULER:
                 gamepad::handle_scheduler_event( ev );
@@ -3624,6 +3730,42 @@ int projected_window_height()
     return get_option<int>( "TERMINAL_Y" ) * fontheight;
 }
 
+// Measures scaling factor for high-dpi displays
+static std::pair<float, float> get_display_scale( int display_index )
+{
+#if SDL_VERSION_ATLEAST(2,26,0)
+    // NOLINTNEXTLINE(cata-combine-locals-into-point)
+    int x = SDL_WINDOWPOS_CENTERED_DISPLAY( display_index );
+    // NOLINTNEXTLINE(cata-combine-locals-into-point)
+    int y = SDL_WINDOWPOS_CENTERED_DISPLAY( display_index );
+
+    SDL_Window *w = SDL_CreateWindow(
+                        "probe",
+                        x, y,
+                        16, 16,
+                        SDL_WINDOW_HIDDEN | SDL_WINDOW_ALLOW_HIGHDPI
+                    );
+    if( !w ) {
+        return std::make_pair( 1.0f, 1.0f );
+    }
+
+    int lw = 0;
+    int lh = 0;
+    SDL_GetWindowSize( w, &lw, &lh );
+    int pw;
+    int ph;
+    SDL_GetWindowSizeInPixels( w, &pw, &ph );
+    SDL_DestroyWindow( w );
+
+    float scale_w = lw ? static_cast<float>( pw ) / static_cast<float>( lw ) : 1.0f;
+    float scale_h = lh ? static_cast<float>( ph ) / static_cast<float>( lh ) : 1.0f;
+    return std::make_pair( scale_w, scale_h );
+#else
+    ( void )display_index; // avoid unused parameter lint
+    return std::make_pair( 1.0f, 1.0f );
+#endif
+}
+
 static void init_term_size_and_scaling_factor()
 {
     scaling_factor = 1;
@@ -3658,7 +3800,11 @@ static void init_term_size_and_scaling_factor()
                                                      SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_MAXIMIZED
                                                    ) );
 
+#if SDL_VERSION_ATLEAST(2,26,0)
+                SDL_GetWindowSizeInPixels( test_window.get(), &max_width, &max_height );
+#else
                 SDL_GetWindowSize( test_window.get(), &max_width, &max_height );
+#endif
 
                 // If the video subsystem isn't reset the test window messes things up later
                 test_window.reset();
@@ -3667,8 +3813,9 @@ static void init_term_size_and_scaling_factor()
 
             } else {
                 // For fullscreen or window borderless maximum size is the display size
-                max_width = current_display.w;
-                max_height = current_display.h;
+                auto [ dpi_scale_w, dpi_scale_h ] = get_display_scale( current_display_id );
+                max_width = dpi_scale_w * current_display.w;
+                max_height = dpi_scale_h * current_display.h;
             }
         } else {
             dbg( D_WARNING ) << "Failed to get current Display Mode, assuming infinite display size.";
@@ -4098,22 +4245,60 @@ std::optional<tripoint_bub_ms> input_context::get_coordinates( const catacurses:
     const window_dimensions dim = get_window_dimensions( capture_win );
 
     const point &win_min = dim.window_pos_pixel;
-    const point &win_size = dim.window_size_pixel;
+    point win_size = dim.window_size_pixel;
+    point logical_coordinate = coordinate;
+    const int scaling_factor = get_scaling_factor();
+
+    // convert window size and coordinate to logical if UI is scaled
+    if( scaling_factor > 1 ) {
+        logical_coordinate.x /= scaling_factor;
+        logical_coordinate.y /= scaling_factor;
+
+        const bool is_terrain_or_overmap = ( use_tiles && g && capture_win == g->w_terrain ) ||
+                                           ( use_tiles && use_tiles_overmap && g && capture_win == g->w_overmap );
+        if( !is_terrain_or_overmap ) {
+            win_size.x /= scaling_factor;
+            win_size.y /= scaling_factor;
+        }
+    }
+
     const point win_max = win_min + win_size;
 
     // Translate mouse coordinates to map coordinates based on tile size
     // Check if click is within bounds of the window we care about
     const half_open_rectangle<point> win_bounds( win_min, win_max );
-    if( !win_bounds.contains( coordinate ) ) {
+    if( !win_bounds.contains( logical_coordinate ) ) {
         return std::nullopt;
     }
 
-    const point screen_pos = coordinate - win_min;
+    const point screen_pos = logical_coordinate - win_min;
+
     const bool use_isometric = g->w_overmap &&
                                capture_win == g->w_overmap ? false : g->is_tileset_isometric();
 
+    // convert tile size to logical if UI is scaled
+    point logical_tile_size;
+    if( scaling_factor > 1 ) {
+        const bool is_terrain = use_tiles && g && capture_win == g->w_terrain;
+        const bool is_overmap = use_tiles && use_tiles_overmap && g && capture_win == g->w_overmap;
+
+        if( is_terrain ) {
+            logical_tile_size.x = tilecontext->get_tile_width();
+            logical_tile_size.y = tilecontext->get_tile_height();
+        } else if( is_overmap ) {
+            logical_tile_size.x = overmap_tilecontext->get_tile_width();
+            logical_tile_size.y = overmap_tilecontext->get_tile_height();
+        } else {
+            logical_tile_size = dim.scaled_font_size;
+            logical_tile_size.x /= scaling_factor;
+            logical_tile_size.y /= scaling_factor;
+        }
+    } else {
+        logical_tile_size = dim.scaled_font_size;
+    }
+
     const point_bub_ms p = cata_tiles::screen_to_player(
-                               screen_pos, dim.scaled_font_size, win_size,
+                               screen_pos, logical_tile_size, win_size,
                                point_bub_ms( offset ), use_isometric );
 
     return tripoint_bub_ms( p, get_map().get_abs_sub().z() );

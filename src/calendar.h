@@ -5,6 +5,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #include <climits>
@@ -53,6 +54,11 @@ enum moon_phase {
     /** Not a valid moon phase, but can be used for iterating through enum */
     MOON_PHASE_MAX
 };
+
+inline auto format_as( moon_phase mp )
+{
+    return static_cast<std::underlying_type_t<moon_phase>>( mp );
+}
 
 enum class time_accuracy {
     /** No accuracy, no idea what time it is **/
@@ -243,7 +249,7 @@ class time_duration
         /**@}*/
 
         /**
-         * Converts the duration to an amount of the given units. The conversions is
+         * Converts the duration to an amount of the given units. The conversions are
          * done with values of the given template type. That means using an integer
          * type (e.g. `int`) will return a truncated value (amount of *full* minutes
          * that make up the duration, discarding the remainder).
@@ -355,7 +361,7 @@ class time_duration
 bool x_in_y( const time_duration &a, const time_duration &b );
 
 /**
- * Convert the given number into an duration by calling the matching
+ * Convert the given number into a duration by calling the matching
  * `time_duration::from_*` function.
  */
 /**@{*/
@@ -448,7 +454,7 @@ std::string to_string_writable( const time_duration &dur );
  * This can be compared with the usual comparison operators.
  * It can be (de)serialized via JSON.
  *
- * Note that is does not handle variable sized season length. Changing the
+ * Note that it does not handle variable sized season length. Changing the
  * season length has no effect on it.
  */
 class time_point
@@ -626,7 +632,7 @@ time_point noon( const time_point &p );
 bool is_night( const time_point &p );
 /** Returns true if it's currently day time - after dawn and before dusk. */
 bool is_day( const time_point &p );
-/** Returns true if it's currently dusk - between sunset and and twilight_duration after sunset. */
+/** Returns true if it's currently dusk - between sunset and twilight_duration after sunset. */
 bool is_dusk( const time_point &p );
 /** Returns true if it's currently dawn - between sunrise and twilight_duration after sunrise. */
 bool is_dawn( const time_point &p );

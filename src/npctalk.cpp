@@ -83,6 +83,7 @@
 #include "itype.h"
 #include "kill_tracker.h"
 #include "magic.h"
+#include "magic_teleporter_list.h"
 #include "map.h"
 #include "map_iterator.h"
 #include "map_scale_constants.h"
@@ -610,8 +611,8 @@ time_duration calc_spell_training_time( const Character &, const Character &stud
     if( student.magic->knows_spell( id ) ) {
         return 1_hours;
     } else {
-        const int time_int = student.magic->time_to_learn_spell( student, id ) / 50;
-        return time_duration::from_seconds( clamp( time_int, 7200, 21600 ) );
+        const int learn_moves = to_moves<int>( student.magic->time_to_learn_spell( student, id ) ) / 50;
+        return time_duration::from_seconds( clamp( learn_moves, 7200, 21600 ) );
     }
 }
 
@@ -694,6 +695,7 @@ enum npc_chat_menu {
     NPC_CHAT_ACTIVITIES_MINING,
     NPC_CHAT_ACTIVITIES_MOPPING,
     NPC_CHAT_ACTIVITIES_READ_REPEATEDLY,
+    NPC_CHAT_ACTIVITIES_STUDY,
     NPC_CHAT_ACTIVITIES_VEHICLE_DECONSTRUCTION,
     NPC_CHAT_ACTIVITIES_VEHICLE_REPAIR,
     NPC_CHAT_ACTIVITIES_UNASSIGN
@@ -963,6 +965,8 @@ static int npc_activities_menu()
     nmenu.addentry( NPC_CHAT_ACTIVITIES_MOPPING, true, 'm', _( "Mopping up stains" ) );
     nmenu.addentry( NPC_CHAT_ACTIVITIES_READ_REPEATEDLY, true, 'R',
                     _( "Study from books you have in order" ) );
+    nmenu.addentry( NPC_CHAT_ACTIVITIES_STUDY, true, 's',
+                    _( "Study from books in study zones" ) );
     nmenu.addentry( NPC_CHAT_ACTIVITIES_VEHICLE_DECONSTRUCTION, true, 'v',
                     _( "Deconstructing vehicles" ) );
     nmenu.addentry( NPC_CHAT_ACTIVITIES_VEHICLE_REPAIR, true, 'V', _( "Repairing vehicles" ) );
@@ -1033,7 +1037,7 @@ static void tell_magic_veh_stop_following()
     }
 }
 
-void game::chat()
+void game::chat( const std::optional<tripoint_bub_ms> &p )
 {
     map &here = get_map();
 
@@ -1044,24 +1048,37 @@ void game::chat()
         // TODO: Get rid of the z-level check when z-level vision gets "better"
         return ( guy.is_npc() || ( guy.is_monster() &&
                                    guy.as_monster()->has_flag( mon_flag_CONVERSATION ) &&
-                                   !guy.as_monster()->type->chat_topics.empty() ) ) && u.posz() == guy.posz() &&
-               u.sees( here, guy.pos_bub( here ) ) &&
-               rl_dist( u.pos_abs(), guy.pos_abs() ) <= SEEX * 2;
+                                   !guy.as_monster()->type->chat_topics.empty() ) ) && player_character.posz() == guy.posz() &&
+               player_character.sees( here, guy.pos_bub( here ) ) &&
+               rl_dist( player_character.pos_abs(), guy.pos_abs() ) <= SEEX * 2;
     } );
+
+    if( p.has_value() ) {
+        Creature *target = get_creature_tracker().creature_at( *p );
+        if( target ) {
+            auto it = std::find( available.begin(), available.end(), target );
+            if( it != available.end() ) {
+                get_avatar().talk_to( get_talker_for( **it ) );
+                return;
+            }
+        }
+    }
+
     const int available_count = available.size();
     const std::vector<npc *> followers = get_npcs_if( [&]( const npc & guy ) {
-        return guy.is_player_ally() && guy.is_following() && guy.can_hear( u.pos_bub(), volume );
+        return guy.is_player_ally() && guy.is_following() &&
+               guy.can_hear( player_character.pos_bub(), volume );
     } );
     const int follower_count = followers.size();
     const std::vector<npc *> guards = get_npcs_if( [&]( const npc & guy ) {
         return guy.mission == NPC_MISSION_GUARD_ALLY &&
                guy.companion_mission_role_id != "FACTION_CAMP" &&
-               guy.can_hear( u.pos_bub(), volume );
+               guy.can_hear( player_character.pos_bub(), volume );
     } );
     const int guard_count = guards.size();
 
     const std::vector<npc *> available_for_activities = get_npcs_if( [&]( const npc & guy ) {
-        return guy.is_player_ally() && guy.can_hear( u.pos_bub(), volume ) &&
+        return guy.is_player_ally() && guy.can_hear( player_character.pos_bub(), volume ) &&
                guy.companion_mission_role_id != "FACTION CAMP";
     } );
     const int available_for_activities_count = available_for_activities.size();
@@ -1451,6 +1468,10 @@ void game::chat()
                     }
                     case NPC_CHAT_ACTIVITIES_READ_REPEATEDLY: {
                         talk_function::do_read_repeatedly( *selected_npc );
+                        break;
+                    }
+                    case NPC_CHAT_ACTIVITIES_STUDY: {
+                        talk_function::do_study( *selected_npc );
                         break;
                     }
                     case NPC_CHAT_ACTIVITIES_MINING: {
@@ -2521,52 +2542,49 @@ void parse_tags( std::string &phrase, const_talker const &u, const_talker const 
             // attempt to cast as an item
             phrase.replace( fa, l, itype_id( var )->nname( 1 ) );
         } else if( tag.find( "<item_description:" ) == 0 ) {
-            //embedding an items name in the string
             std::string var = tag.substr( tag.find( ':' ) + 1 );
             // remove the trailing >
             var.pop_back();
             // resolve nest
             parse_tags( var, u, me, d, item_type );
-            // attempt to cast as an item
             phrase.replace( fa, l, itype_id( var )->description.translated() );
         } else if( tag.find( "<trait_name:" ) == 0 ) {
-            //embedding an items name in the string
             std::string var = tag.substr( tag.find( ':' ) + 1 );
             // remove the trailing >
             var.pop_back();
             // resolve nest
             parse_tags( var, u, me, d, item_type );
-            // attempt to cast as an item
             phrase.replace( fa, l, trait_id( var )->name() );
         } else if( tag.find( "<trait_description:" ) == 0 ) {
-            //embedding an items name in the string
             std::string var = tag.substr( tag.find( ':' ) + 1 );
             // remove the trailing >
             var.pop_back();
             // resolve nest
             parse_tags( var, u, me, d, item_type );
-            // attempt to cast as an item
+            // this probably will benefit from grabbing alpha/beta talker instead of avatar
             phrase.replace( fa, l, me_chr->mutation_desc( trait_id( var ) ) );
         } else if( tag.find( "<spell_name:" ) == 0 ) {
-            //embedding an items name in the string
             std::string var = tag.substr( tag.find( ':' ) + 1 );
             // remove the trailing >
             var.pop_back();
             // resolve nest
             parse_tags( var, u, me, d, item_type );
-            // attempt to cast as an item
             phrase.replace( fa, l, spell_id( var )->name.translated() );
         } else if( tag.find( "<spell_description:" ) == 0 ) {
-            //embedding an items name in the string
             std::string var = tag.substr( tag.find( ':' ) + 1 );
             // remove the trailing >
             var.pop_back();
             // resolve nest
             parse_tags( var, u, me, d, item_type );
-            // attempt to cast as an item
             phrase.replace( fa, l, spell_id( var )->description.translated() );
+        } else if( tag.find( "<u_spell_level:" ) == 0 ) {
+            std::string var = tag.substr( tag.find( ':' ) + 1 );
+            // remove the trailing >
+            var.pop_back();
+            // resolve nest
+            parse_tags( var, u, me, d, item_type );
+            phrase.replace( fa, l, std::to_string( u.get_spell_level( spell_id( var ) ) ) );
         } else if( tag.find( "<keybind:" ) == 0 ) {
-            //embedding an items name in the string
             std::string var = tag.substr( tag.find( ':' ) + 1 );
             // remove the trailing >
             var.pop_back();
@@ -3011,6 +3029,9 @@ talk_topic dialogue::opt( dialogue_window &d_win, const talk_topic &topic )
             input_event evt;
             action = ctxt.handle_input();
             evt = ctxt.get_raw_input();
+            if( evt.type == input_event_t::error || evt.type == input_event_t::timeout ) {
+                continue;
+            }
             d_win.handle_scrolling( action, ctxt );
             talk_topic st = special_talk( action );
             if( st.id != "TALK_NONE" ) {
@@ -4650,10 +4671,17 @@ talk_effect_fun_t::func f_query_omt( const JsonObject &jo, std::string_view memb
                 tripoint_abs_ms abs_ms = read_var_value( *target_var, d ).tripoint();
                 target_pos = project_to<coords::omt>( abs_ms );
             }
-
+            int distance = distance_limit.evaluate( d );
+            bool is_distance_set = distance != INT_MAX;
+            if( is_distance_set ) {
+                ui::omap::range_mark( target_pos, distance );
+            }
             tripoint_abs_omt pick =
                 ui::omap::choose_point( message.evaluate( d ).translated(), target_pos, false,
-                                        distance_limit.evaluate( d ) );
+                                        distance );
+            if( is_distance_set ) {
+                ui::omap::range_mark( target_pos, distance, false );
+            }
             if( pick != tripoint_abs_omt::invalid ) {
                 tripoint_abs_ms abs_pos_ms = project_to<coords::ms>( pick );
                 // aim at the center of OMT
@@ -4931,6 +4959,9 @@ talk_effect_fun_t::func f_copy_location( const JsonObject &jo, std::string_view 
                                         sm->get_revert_submap(), key.evaluate( d ) );
             }
         }
+        // We need to copy the translocator to target omt pos if it exists
+        avatar &player_character = get_avatar();
+        player_character.translocators.copy_translocator( omt_pos, omt_pos_new );
         reality_bubble().invalidate_map_cache( omt_pos_new.z() );
     };
 }
@@ -6078,6 +6109,22 @@ talk_effect_fun_t::func f_transform_item( const JsonObject &jo, std::string_view
     };
 }
 
+talk_effect_fun_t::func f_set_browsed( const JsonObject &jo, std::string_view member,
+                                       std::string_view )
+{
+    bool desired_browse_state = jo.get_bool( member );
+
+    return [desired_browse_state]( dialogue const & d ) {
+        item_location *it = d.actor( true )->get_item();
+
+        if( it && it->get_item() ) {
+            ( *it )->set_browsed( desired_browse_state );
+        } else {
+            debugmsg( "beta talker must be Item." );
+        }
+    };
+}
+
 talk_effect_fun_t::func f_make_sound( const JsonObject &jo, std::string_view member,
                                       std::string_view, bool is_npc )
 {
@@ -6491,6 +6538,13 @@ talk_effect_fun_t::func f_run_eoc_selector( const JsonObject &jo, std::string_vi
     };
 }
 
+struct span_param {
+    bool has_min;
+    dbl_or_var min;
+    bool has_max;
+    dbl_or_var max;
+};
+
 talk_effect_fun_t::func f_run_npc_eocs( const JsonObject &jo,
                                         std::string_view member, std::string_view src, bool is_npc )
 {
@@ -6507,16 +6561,29 @@ talk_effect_fun_t::func f_run_npc_eocs( const JsonObject &jo,
     if( jo.has_int( "npc_range" ) ) {
         npc_range = jo.get_int( "npc_range" );
     }
+
+    span_param z_span;
+    z_span.has_min = jo.has_member( "z_min" );
+    z_span.has_max = jo.has_member( "z_max" );
+    optional( jo, false, "z_min", z_span.min, 0 );
+    optional( jo, false, "z_max", z_span.max, 0 );
+
     bool npc_must_see = jo.get_bool( "npc_must_see", false );
     if( local ) {
-        return [eocs, unique_ids, npc_must_see, npc_range, is_npc, &here]( dialogue const & d ) {
+        return [eocs, unique_ids, npc_must_see, npc_range, z_span, is_npc,
+              &here]( dialogue const & d ) {
             tripoint_bub_ms actor_pos = d.actor( is_npc )->pos_bub( here );
             std::vector<std::string> ids;
             ids.reserve( unique_ids.size() );
             for( const str_or_var &id : unique_ids ) {
                 ids.emplace_back( id.evaluate( d ) );
             }
-            const std::vector<npc *> available = g->get_npcs_if( [npc_must_see, npc_range, actor_pos,
+            // optimization: avoid repeat evaluations in loops
+            int z_min = z_span.min.evaluate( d );
+            int z_max = z_span.max.evaluate( d );
+            const std::vector<npc *> available = g->get_npcs_if( [npc_must_see, npc_range, z_span, z_min,
+                                                               z_max,
+                                                               actor_pos,
                           ids, &here]( const npc & guy ) {
                 bool id_valid = ids.empty();
                 for( const std::string &id : ids ) {
@@ -6525,9 +6592,12 @@ talk_effect_fun_t::func f_run_npc_eocs( const JsonObject &jo,
                         break;
                     }
                 }
-                return id_valid && ( !npc_range.has_value() || actor_pos.z() == guy.posz() ) && ( !npc_must_see ||
-                        guy.sees( here, actor_pos ) ) &&
-                       ( !npc_range.has_value() || rl_dist( actor_pos, guy.pos_bub( here ) ) <= npc_range.value() );
+                bool is_z_filter_set = z_span.has_min || z_span.has_max;
+                return id_valid && ( !npc_range.has_value() || is_z_filter_set || actor_pos.z() == guy.posz() ) &&
+                       ( !npc_must_see || guy.sees( here, actor_pos ) ) &&
+                       ( !npc_range.has_value() || rl_dist( actor_pos, guy.pos_bub( here ) ) <= npc_range.value() ) &&
+                       ( !z_span.has_min || guy.posz() >= z_min ) &&
+                       ( !z_span.has_max || guy.posz() <= z_max );
             } );
             for( npc *target : available ) {
                 for( const effect_on_condition_id &eoc : eocs ) {
@@ -6569,16 +6639,27 @@ talk_effect_fun_t::func f_run_monster_eocs( const JsonObject &jo,
     if( jo.has_int( "monster_range" ) ) {
         monster_range = jo.get_int( "monster_range" );
     }
+
+    span_param z_span;
+    z_span.has_min = jo.has_member( "z_min" );
+    z_span.has_max = jo.has_member( "z_max" );
+    optional( jo, false, "z_min", z_span.min, 0 );
+    optional( jo, false, "z_max", z_span.max, 0 );
+
     bool monster_must_see = jo.get_bool( "monster_must_see", false );
-    return [eocs, mtype_ids, monster_must_see, monster_range, is_npc, &here]( dialogue const & d ) {
+    return [eocs, mtype_ids, monster_must_see, monster_range, z_span, is_npc,
+          &here]( dialogue const & d ) {
         std::vector<mtype_id> ids;
         ids.reserve( mtype_ids.size() );
         for( const str_or_var &id : mtype_ids ) {
             ids.emplace_back( id.evaluate( d ) );
         }
         tripoint_bub_ms actor_pos = d.actor( is_npc )->pos_bub( here );
-        const std::vector<Creature *> available = g->get_creatures_if( [ ids, monster_must_see,
-             monster_range, actor_pos, &here ]( const Creature & critter ) {
+        // optimization: avoid repeat evaluations in loops
+        int z_min = z_span.min.evaluate( d );
+        int z_max = z_span.max.evaluate( d );
+        const std::vector<Creature *> available = g->get_creatures_if( [ids, monster_must_see,
+             monster_range, z_span, z_min, z_max, actor_pos, &here ]( const Creature & critter ) {
             bool id_valid = ids.empty();
             bool creature_is_monster = critter.is_monster();
             if( creature_is_monster ) {
@@ -6589,12 +6670,14 @@ talk_effect_fun_t::func f_run_monster_eocs( const JsonObject &jo,
                     }
                 }
             }
-            return creature_is_monster && id_valid && ( !monster_range.has_value() ||
-                    actor_pos.z() == critter.posz() ) &&
-                   ( !monster_must_see ||
-                     critter.sees( here, actor_pos ) ) &&
+            bool is_z_filter_set = z_span.has_min || z_span.has_max;
+            return creature_is_monster && id_valid &&
+                   ( !monster_range.has_value() || is_z_filter_set || actor_pos.z() == critter.posz() ) &&
+                   ( !monster_must_see || critter.sees( here, actor_pos ) ) &&
                    ( !monster_range.has_value() ||
-                     rl_dist( actor_pos, critter.pos_bub( here ) ) <= monster_range.value() );
+                     rl_dist( actor_pos, critter.pos_bub( here ) ) <= monster_range.value() ) &&
+                   ( !z_span.has_min || critter.posz() >= z_min ) &&
+                   ( !z_span.has_max || critter.posz() <= z_max );
         } );
         for( Creature *target : available ) {
             for( const effect_on_condition_id &eoc : eocs ) {
@@ -6613,14 +6696,71 @@ talk_effect_fun_t::func f_run_vehicle_eocs( const JsonObject &jo,
     if( jo.has_int( "vehicle_range" ) ) {
         vehicle_range = jo.get_int( "vehicle_range" );
     }
-    return [eocs, vehicle_range, is_npc]( dialogue const & d ) {
+    span_param z_span;
+    z_span.has_min = jo.has_member( "z_min" );
+    z_span.has_max = jo.has_member( "z_max" );
+    optional( jo, false, "z_min", z_span.min, 0 );
+    optional( jo, false, "z_max", z_span.max, 0 );
+
+    return [eocs, vehicle_range, z_span, is_npc]( dialogue const & d ) {
         tripoint_abs_ms actor_pos = d.actor( is_npc )->pos_abs();
+        int z_min = z_span.min.evaluate( d );
+        int z_max = z_span.max.evaluate( d );
         for( wrapped_vehicle &elem : get_map().get_vehicles() ) {
             vehicle &veh = *elem.v;
+            const tripoint_abs_ms &pos_abs = veh.pos_abs();
+            if( z_span.has_min && pos_abs.z() < z_min ) {
+                continue;
+            }
+            if( z_span.has_max && pos_abs.z() > z_max ) {
+                continue;
+            }
             if( !vehicle_range.has_value() ||
                 rl_dist( actor_pos, veh.pos_abs() ) <= vehicle_range.value() ) {
                 for( const effect_on_condition_id &eoc : eocs ) {
                     dialogue newDialog( get_talker_for( veh ), nullptr, d.get_conditionals(), d.get_context() );
+                    eoc->activate( newDialog );
+                }
+            }
+        }
+    };
+}
+
+talk_effect_fun_t::func f_run_fixed_zone_eocs( const JsonObject &jo,
+        std::string_view member, std::string_view src, bool is_npc )
+{
+    std::vector<effect_on_condition_id> eocs = load_eoc_vector( jo, member, src );
+    std::optional<int> zone_range;
+    if( jo.has_int( "zone_range" ) ) {
+        zone_range = jo.get_int( "zone_range" );
+    }
+
+    span_param z_span;
+    z_span.has_min = jo.has_member( "z_min" );
+    z_span.has_max = jo.has_member( "z_max" );
+    optional( jo, false, "z_min", z_span.min, 0 );
+    optional( jo, false, "z_max", z_span.max, 0 );
+
+    return [eocs, zone_range, z_span, is_npc]( dialogue const & d ) {
+        zone_manager &mgr = zone_manager::get_manager();
+        tripoint_abs_ms actor_pos = d.actor( is_npc )->pos_abs();
+        int z_min = z_span.min.evaluate( d );
+        int z_max = z_span.max.evaluate( d );
+        for( zone_data &zone : mgr.get_zones() ) {
+            if( zone.get_is_personal() || zone.get_is_vehicle() ) {
+                continue;
+            }
+            const tripoint_abs_ms &pos_abs = zone.get_start_point();
+            if( z_span.has_min && pos_abs.z() < z_min ) {
+                continue;
+            }
+            if( z_span.has_max && pos_abs.z() > z_max ) {
+                continue;
+            }
+            if( !zone_range.has_value() ||
+                rl_dist( actor_pos, zone.get_start_point() ) <= zone_range.value() ) {
+                for( const effect_on_condition_id &eoc : eocs ) {
+                    dialogue newDialog( get_talker_for( zone ), nullptr, d.get_conditionals(), d.get_context() );
                     eoc->activate( newDialog );
                 }
             }
@@ -6673,9 +6813,10 @@ talk_effect_fun_t::func f_map_run_item_eocs( const JsonObject &jo, std::string_v
     optional( jo, false, "loc", loc_var );
     dbl_or_var dov_min_radius = get_dbl_or_var( jo, "min_radius", false, 0 );
     dbl_or_var dov_max_radius = get_dbl_or_var( jo, "max_radius", false, 0 );
+    bool accessible = jo.get_bool( "accessible", true );
 
     return [is_npc, option, true_eocs, false_eocs, data, loc_var, dov_min_radius, dov_max_radius,
-            title]( dialogue & d ) {
+            title, accessible]( dialogue & d ) {
         tripoint_abs_ms target_location;
         if( loc_var ) {
             target_location = read_var_value( *loc_var, d ).tripoint();
@@ -6697,7 +6838,7 @@ talk_effect_fun_t::func f_map_run_item_eocs( const JsonObject &jo, std::string_v
         Character *guy = d.actor( is_npc )->get_character();
         guy = guy ? guy : &get_player_character();
         const auto f = [d, guy, title, center, min_radius,
-           max_radius, &here]( const item_location_filter & filter ) {
+           max_radius, accessible, &here]( const item_location_filter & filter ) {
             inventory_filter_preset preset( filter );
             inventory_pick_selector inv_s( *guy, preset );
             inv_s.set_title( title.evaluate( d ).translated() );
@@ -6705,7 +6846,11 @@ talk_effect_fun_t::func f_map_run_item_eocs( const JsonObject &jo, std::string_v
             inv_s.clear_items();
             for( const tripoint_bub_ms &pos : here.points_in_radius( center, max_radius ) ) {
                 if( rl_dist( center, pos ) >= min_radius ) {
-                    inv_s.add_map_items( pos );
+                    if( accessible ) {
+                        inv_s.add_map_items( pos );
+                    } else {
+                        inv_s.add_inaccessible_map_items( pos );
+                    }
                 }
             }
             if( inv_s.empty() ) {
@@ -6715,7 +6860,7 @@ talk_effect_fun_t::func f_map_run_item_eocs( const JsonObject &jo, std::string_v
             return inv_s.execute();
         };
         const item_menu_mul f_mul = [d, guy, title, center, min_radius,
-           max_radius, &here]( const item_location_filter & filter ) {
+           max_radius, accessible, &here]( const item_location_filter & filter ) {
             inventory_filter_preset preset( filter );
             inventory_multiselector inv_s( *guy, preset );
             inv_s.set_title( title.evaluate( d ).translated() );
@@ -6723,7 +6868,11 @@ talk_effect_fun_t::func f_map_run_item_eocs( const JsonObject &jo, std::string_v
             inv_s.clear_items();
             for( const tripoint_bub_ms &pos : here.points_in_radius( center, max_radius ) ) {
                 if( rl_dist( center, pos ) >= min_radius ) {
-                    inv_s.add_map_items( pos );
+                    if( accessible ) {
+                        inv_s.add_map_items( pos );
+                    } else {
+                        inv_s.add_inaccessible_map_items( pos );
+                    }
                 }
             }
             if( inv_s.empty() ) {
@@ -7094,10 +7243,12 @@ talk_effect_fun_t::func f_knockback( const JsonObject &jo, std::string_view memb
             direction_pos = here.get_bub( abs_ms );
         } else {
             direction_pos = d.actor( is_npc )->pos_bub( here );
+        }
 
+        // if we pass target_pos == direction_pos to knockback()->continue_line() the game gonna crash
+        if( direction_pos == target_pos ) {
             point d2( rng( -1, 1 ), rng( -1, 1 ) );
 
-            // if we pass target_pos == direction_pos to knockback()->continue_line() the game gonna crash
             while( d2 == point::zero ) {
                 d2 = point( rng( -1, 1 ), rng( -1, 1 ) );
             }
@@ -7689,7 +7840,15 @@ talk_effect_fun_t::func f_teleport( const JsonObject &jo, std::string_view membe
         }
         vehicle *veh = d.actor( is_npc )->get_vehicle();
         if( veh ) {
-            if( teleport::teleport_vehicle( *veh, target_pos ) ) {
+            if( teleport::teleport_vehicle( *veh, target_pos, force ) ) {
+                add_msg( success_message.evaluate( d ) );
+            } else {
+                add_msg( fail_message.evaluate( d ) );
+            }
+        }
+        zone_data *zone = d.actor( is_npc )->get_zone();
+        if( zone ) {
+            if( teleport::teleport_zone( *zone, target_pos ) ) {
                 add_msg( success_message.evaluate( d ) );
             } else {
                 add_msg( fail_message.evaluate( d ) );
@@ -7946,6 +8105,7 @@ parsers = {
     { "u_run_npc_eocs", "npc_run_npc_eocs", jarg::array, &talk_effect_fun::f_run_npc_eocs },
     { "u_run_monster_eocs", "npc_run_monster_eocs", jarg::array, &talk_effect_fun::f_run_monster_eocs },
     { "u_run_vehicle_eocs", "npc_run_vehicle_eocs", jarg::array, &talk_effect_fun::f_run_vehicle_eocs },
+    { "u_run_fixed_zone_eocs", "npc_run_fixed_zone_eocs", jarg::array, &talk_effect_fun::f_run_fixed_zone_eocs },
     { "u_run_inv_eocs", "npc_run_inv_eocs", jarg::member, &talk_effect_fun::f_run_inv_eocs },
     { "u_roll_remainder", "npc_roll_remainder", jarg::member, &talk_effect_fun::f_roll_remainder },
     { "u_set_fac_relation", "npc_set_fac_relation", jarg::member, &talk_effect_fun::f_set_fac_relation },
@@ -8036,6 +8196,7 @@ parsers = {
     { "turn_cost", jarg::member, &talk_effect_fun::f_turn_cost },
     { "transform_item", jarg::member, &talk_effect_fun::f_transform_item },
     { "signal_hordes", jarg::member, &talk_effect_fun::f_signal_hordes },
+    { "set_browsed", jarg::member, &talk_effect_fun::f_set_browsed },
     // since parser checks all effects in order, having "message" field in any another effect (like in f_roll_remainder)
     // would cause parser to think it's a "message" effect
     { "message", "message", jarg::member, &talk_effect_fun::f_message },
@@ -8086,6 +8247,7 @@ void talk_effect_t::parse_string_effect( const std::string &effect_id, const Jso
             WRAP( do_read ),
             WRAP( do_eread ),
             WRAP( do_read_repeatedly ),
+            WRAP( do_study ),
             WRAP( do_craft ),
             WRAP( do_butcher ),
             WRAP( do_farming ),

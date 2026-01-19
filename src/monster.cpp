@@ -34,16 +34,19 @@
 #include "event_bus.h"
 #include "explosion.h"
 #include "faction.h"
+#include "field.h"
 #include "field_type.h"
 #include "flat_set.h"
 #include "game.h"
 #include "harvest.h"
 #include "imgui/imgui.h"
 #include "item.h"
+#include "item_factory.h"
 #include "item_group.h"
 #include "item_location.h"
 #include "item_pocket.h"
 #include "itype.h"
+#include "iuse.h"
 #include "magic.h"
 #include "magic_enchantment.h"
 #include "map.h"
@@ -103,8 +106,6 @@ static const efftype_id effect_bleed( "bleed" );
 static const efftype_id effect_blind( "blind" );
 static const efftype_id effect_bouldering( "bouldering" );
 static const efftype_id effect_cramped_space( "cramped_space" );
-static const efftype_id effect_critter_underfed( "critter_underfed" );
-static const efftype_id effect_critter_well_fed( "critter_well_fed" );
 static const efftype_id effect_crushed( "crushed" );
 static const efftype_id effect_deaf( "deaf" );
 static const efftype_id effect_disarmed( "disarmed" );
@@ -158,6 +159,7 @@ static const flag_id json_flag_DISABLE_FLIGHT( "DISABLE_FLIGHT" );
 static const flag_id json_flag_FILTHY( "FILTHY" );
 static const flag_id json_flag_GRAB( "GRAB" );
 static const flag_id json_flag_GRAB_FILTER( "GRAB_FILTER" );
+static const flag_id json_flag_PRESERVE_SPAWN_LOC( "PRESERVE_SPAWN_LOC" );
 
 static const itype_id itype_beartrap( "beartrap" );
 static const itype_id itype_milk( "milk" );
@@ -248,7 +250,6 @@ monster::monster()
     unset_dest();
     moves = 0;
     faction = mfaction_id( 0 );
-    stomach_timer = calendar::turn;
     last_updated = calendar::turn_zero;
     biosig_timer = calendar::before_time_starts;
     udder_timer = calendar::turn;
@@ -583,9 +584,6 @@ void monster::try_reproduce()
         }
 
         chance += 2;
-        if( !has_eaten_enough() ) {
-            chance += 1; //Reduce the chances but don't prevent birth if the animal is not eating.
-        }
         if( season_match && female && one_in( chance ) ) {
             int spawn_cnt = rng( 1, type->baby_count );
             if( !type->baby_type.baby_monster.is_null() ) {
@@ -619,9 +617,6 @@ void monster::refill_udders()
         debugmsg( "monster %s has no starting ammo to refill udders", get_name() );
         return;
     }
-    if( !has_eaten_enough() ) {
-        return;
-    }
     if( ammo.empty() ) {
         // legacy animals got empty ammo map, fill them up now if needed.
         ammo[type->starting_ammo.begin()->first] = type->starting_ammo.begin()->second;
@@ -648,66 +643,6 @@ void monster::refill_udders()
     }
 }
 
-void monster::recheck_fed_status()
-{
-    remove_effect( effect_critter_underfed );
-    remove_effect( effect_critter_well_fed );
-    if( !has_flag( mon_flag_EATS ) ) {
-        return;
-    }
-    if( has_fully_eaten() ) {
-        add_effect( effect_critter_well_fed, 24_hours );
-    } else if( !has_eaten_enough() ) {
-        add_effect( effect_critter_underfed, 24_hours );
-    }
-}
-
-void monster::set_amount_eaten( int new_amount )
-{
-    amount_eaten = new_amount;
-    recheck_fed_status();
-}
-
-void monster::mod_amount_eaten( int amount_to_add )
-{
-    amount_eaten += amount_to_add;
-    recheck_fed_status();
-}
-
-int monster::get_amount_eaten() const
-{
-    return amount_eaten;
-}
-
-int monster::get_stomach_fullness_percent() const
-{
-    if( type->stomach_size == 0 ) {
-        return 100; // no div-by-zero
-    }
-    return get_amount_eaten() / type->stomach_size;
-}
-
-bool monster::has_eaten_enough() const
-{
-    return !has_effect( effect_critter_underfed ) &&
-           ( has_effect( effect_critter_well_fed ) || has_fully_eaten() );
-}
-
-
-bool monster::has_fully_eaten() const
-{
-    return amount_eaten >= type->stomach_size;
-}
-
-void monster::digest_food()
-{
-    if( calendar::turn - stomach_timer > 1_days ) {
-        recheck_fed_status();
-        set_amount_eaten( 0 );
-        stomach_timer = calendar::turn;
-    }
-}
-
 void monster::try_biosignature()
 {
     if( is_hallucination() ) {
@@ -718,9 +653,6 @@ void monster::try_biosignature()
         return;
     }
     if( !type->biosig_timer ) {
-        return;
-    }
-    if( !has_eaten_enough() ) {
         return;
     }
 
@@ -972,6 +904,22 @@ int monster::print_info( const catacurses::window &w, int vStart, int vLines, in
         }
     }
     wattroff( w, c_light_gray );
+
+    // Print "taming" food information
+    if( !type->petfood.food.empty() ) {
+        vStart += fold_and_print( w, point( column, vStart ), max_width, c_light_blue,
+                                  _( "Seems to be familiar with people and could be tamed with:" ) );
+
+        for( std::string food_category : type->petfood.food ) {
+            std::vector<const itype *> food_items = Item_factory::find( [&]( const itype & t ) {
+                return t.use_methods.count( "PETFOOD" ) && t.comestible &&
+                       t.comestible->petfood.count( food_category );
+            } );
+            for( const itype *food_item_type : food_items ) {
+                mvwprintz( w, point( column, ++vStart ), c_white, food_item_type->nname( 1 ) );
+            }
+        }
+    }
 
     // Riding indicator on next line after description.
     if( has_effect( effect_ridden ) && mounted_player ) {
@@ -1283,6 +1231,17 @@ std::vector<std::string> monster::extended_description() const
                                              to_turn<int>( lifespan_end.value() - current_time ) ) );
         } else {
             tmp.emplace_back( "Lifespan end time: n/a <color_yellow>(indefinite)</color>" );
+        }
+
+        const std::vector<std::reference_wrapper<const effect>> all_effects = get_effects();
+        if( !all_effects.empty() ) {
+            tmp.emplace_back( "Applied effects:" );
+            for( const effect &eff : all_effects ) {
+                const std::string is_permanent = eff.is_permanent() ? "(permanent)" : "";
+                tmp.emplace_back( string_format( "%s (%s) %s", eff.get_id().c_str(),
+                                                 to_string_writable( eff.get_duration() ).c_str(),
+                                                 is_permanent.c_str() ) );
+            }
         }
     }
 
@@ -2648,7 +2607,7 @@ bool monster::move_effects( bool )
             int monster = type->melee_skill + type->melee_damage.total_damage();
             int grab_str = get_effect_int( grab.get_id() );
             add_msg_debug( debugmode::DF_MONSTER, "%s attempting to break grab %s, success %d in intensity %d",
-                           get_name(), grab.get_id().c_str(), monster, grabber );
+                           get_name(), grab.get_id().c_str(), monster, grab_str );
             if( !x_in_y( monster, grab_str ) ) {
                 return false;
             } else {
@@ -3130,6 +3089,11 @@ void monster::die( map *here, Creature *nkiller )
         }
     }
 
+    // This is special-cased "death guilt" for human "monsters". They apply full murder penalties, it's quite a bit different to kill a living human than to re-kill the corpse of a child.
+    if( type->has_flag( mon_flag_GUILT_HUMAN ) && get_killer() == &get_player_character() ) {
+        get_player_character().apply_murder_penalties( this );
+    }
+
     if( type->mdeath_effect.eoc.has_value() ) {
         //Not a hallucination, go process the death effects.
         if( type->mdeath_effect.eoc.value().is_valid() ) {
@@ -3365,6 +3329,25 @@ void monster::drop_items_on_death( map *here, item *corpse )
             }
         }
     }
+
+    // Check if item has PRESERVE_SPAWN_LOC and set it if necessary
+    // This probably needs to be encapsulated in some generic function
+    for( item &it : new_items ) {
+        if( it.has_flag( json_flag_PRESERVE_SPAWN_LOC ) &&
+            !it.has_var( "spawn_location" ) ) {
+            it.set_var( "spawn_location", pos_abs().to_string_writable() );
+        }
+
+        // since efiles are not in standard pocket, check it separately
+        if( it.has_pocket_type( pocket_type::E_FILE_STORAGE ) ) {
+            for( item *it_software : it.all_items_top( pocket_type::E_FILE_STORAGE ) ) {
+                if( it_software->has_flag( json_flag_PRESERVE_SPAWN_LOC ) &&
+                    !it_software->has_var( "spawn_location" ) ) {
+                    it_software->set_var( "spawn_location", pos_abs().to_string_writable() );
+                }
+            }
+        }
+    };
 }
 
 void monster::spawn_dissectables_on_death( item *corpse ) const
@@ -3571,6 +3554,10 @@ void monster::process_effects()
             anger += 5;
             anger = std::min( anger, type->agro );
         }
+    }
+
+    if( has_flag( mon_flag_UNBREAKABLE_MORALE ) ) {
+        morale += 100;
     }
 
     if( has_flag( mon_flag_CORNERED_FIGHTER ) ) {
@@ -3993,9 +3980,28 @@ void monster::hear_sound( const tripoint_bub_ms &source, const int vol, const in
         return;
     }
 
-    int tmp_provocative = provocative || volume >= normal_roll( 30, 5 );
+    // Kind of nasty, but this prevents zombies from being attracted to collapsing on-fire buildings.
+    // The rationale for this is simple: Without it, one burning building would wipe out every zed in several blocks. So how did any of them survive the riots?
+    bool probably_a_fire = false;
+    map &here = get_map();
+    for( const tripoint_bub_ms &pt : here.points_in_radius( source, 1, 1 ) ) {
+        const field_entry *fire_fld = here.get_field( pt, fd_fire );
+        // Only large, uncontained fires cause sounds to be ignored.
+        if( fire_fld && fire_fld->get_field_intensity() > 1 &&
+            !here.has_flag_ter_or_furn( ter_furn_flag::TFLAG_FIRE_CONTAINER, pt ) ) {
+            probably_a_fire = true;
+            break;
+        }
+    }
+
+    int tmp_provocative = !probably_a_fire && ( provocative || volume >= normal_roll( 30, 5 ) );
+
+    // Not interesting sound, nothing to do here
+    if( !tmp_provocative ) {
+        return;
+    }
     // already following a more interesting sound
-    if( provocative_sound && !tmp_provocative && wandf > 0 ) {
+    if( provocative_sound && wandf > 0 ) {
         return;
     }
 
@@ -4015,7 +4021,7 @@ void monster::hear_sound( const tripoint_bub_ms &source, const int vol, const in
     // target_z will require some special check due to soil muffling sounds
 
     const int wander_turns = volume * ( goodhearing ? 6 : 1 );
-    // again, already following a more interesting sound
+    // The sound was interesting, but not interesting enough to *want* to follow it.
     if( wander_turns < wandf ) {
         return;
     }

@@ -873,6 +873,7 @@ bufo
 bufos
 bugfixes
 bugout
+Buildable
 Bukharin
 bulette
 bulettes
@@ -1582,6 +1583,7 @@ dokie
 Dolichovespula
 dollkin
 dolm
+dolmas
 domestica
 Donatello
 donburi
@@ -1927,6 +1929,7 @@ Fabrique
 Fabritechnics
 Facebook
 facemasks
+facsimile
 facto
 faders
 fae
@@ -2051,6 +2054,8 @@ flatbread
 FlatCoin
 FlatCoins
 flatjaw
+flailer
+flailers
 flatlander
 flatlanders
 Flavio
@@ -2261,6 +2266,8 @@ genecraft
 genemod
 genemoded
 Genghis
+genset
+gensets
 Geoffrey
 geokinesis
 George
@@ -2659,6 +2666,7 @@ hnefatafl
 Hobbes
 hobblebush
 hobbleberries
+hobbleberry
 hoc
 Hockomock
 hodag
@@ -3451,6 +3459,8 @@ Lilit
 lilypad
 Lima
 limbed
+limnology
+limnological
 Lincoln
 Linda
 Lindbergh
@@ -3843,6 +3853,7 @@ Mesopotamian
 meta
 metalcutting
 metallics
+metallized
 metalsmithing
 metamagic
 metamaterial
@@ -4036,6 +4047,7 @@ Moreau
 Moreauburger
 Moreauburgers
 Morgan
+Morgantown
 Mori
 Mormon
 morningstar
@@ -4078,6 +4090,7 @@ Moyer
 Mozart
 Mozilla
 MP
+MPET
 mph
 MR
 Mr
@@ -4103,6 +4116,7 @@ Mulroy
 multi
 multiclean
 multidrop
+multifuel
 multimeters
 multiplayer
 multipool
@@ -4174,11 +4188,13 @@ nanomesh
 nanoprinted
 nanoribbon
 nanoribbons
+nanos
 nanosaurus
 nanoskirt
 nanoskirts
 nanotech
 nanotubes
+nanotyrannus
 nanowire
 Nantucket
 nanuqsaurus
@@ -4609,6 +4625,8 @@ papalotl
 Papaver
 paperclipped
 papier
+PAPR
+PAPRs
 Papuan
 papyrifera
 parabellum
@@ -5644,6 +5662,7 @@ Sikh
 Sikhism
 Sikorsky
 Silat
+SilentEagle
 siloed
 siloing
 silverberry
@@ -6280,6 +6299,7 @@ Thumper
 thunderball
 Thunderdome
 thunk
+thunks
 Thursday
 thyreophoran
 Tiamat
@@ -6537,6 +6557,7 @@ uncategorized
 uncontacted
 uncontrol
 uncorded
+uncrafted
 undeath
 underbarrel
 underbrushes
@@ -6963,6 +6984,7 @@ Woburn
 Wolfi
 wolfmen
 wolfshead
+woobie
 woodbow
 woodbows
 woodchip
@@ -7185,4 +7207,5 @@ zweihänders
 zweitimber
 zweitimbers
 zygomaticus
+zzip
 zzz

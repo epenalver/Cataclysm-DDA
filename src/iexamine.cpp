@@ -47,6 +47,7 @@
 #include "harvest.h"
 #include "input_context.h"
 #include "input_enums.h"
+#include "input_popup.h"
 #include "inventory.h"
 #include "item.h"
 #include "item_components.h"
@@ -79,7 +80,6 @@
 #include "rng.h"
 #include "sounds.h"
 #include "string_formatter.h"
-#include "string_input_popup.h"
 #include "talker.h"  // IWYU pragma: keep
 #include "tileray.h"
 #include "timed_event.h"
@@ -100,15 +100,10 @@
 #include "vpart_range.h"
 #include "weather.h"
 
-static const activity_id ACT_ATM( "ACT_ATM" );
-static const activity_id ACT_BUILD( "ACT_BUILD" );
 static const activity_id ACT_HARVEST( "ACT_HARVEST" );
 static const activity_id ACT_OPERATION( "ACT_OPERATION" );
-static const activity_id ACT_PLANT_SEED( "ACT_PLANT_SEED" );
 
 static const addiction_id addiction_opiate( "opiate" );
-
-static const ammotype ammo_money( "money" );
 
 static const bionic_id bio_lighter( "bio_lighter" );
 static const bionic_id bio_lockpick( "bio_lockpick" );
@@ -308,6 +303,7 @@ static const trait_id trait_BADKNEES( "BADKNEES" );
 static const trait_id trait_BEAK_HUM( "BEAK_HUM" );
 static const trait_id trait_BURROW( "BURROW" );
 static const trait_id trait_BURROWLARGE( "BURROWLARGE" );
+static const trait_id trait_CANNOT_GAIN_PSIONICS( "CANNOT_GAIN_PSIONICS" );
 static const trait_id trait_DEBUG_HS( "DEBUG_HS" );
 static const trait_id trait_ESPER_ADVANCEMENT_OKAY( "ESPER_ADVANCEMENT_OKAY" );
 static const trait_id trait_ESPER_STARTER_ADVANCEMENT_OKAY( "ESPER_STARTER_ADVANCEMENT_OKAY" );
@@ -571,6 +567,9 @@ void iexamine::genemill( Character &you, const tripoint_bub_ms & )
     if( you.has_permanent_trait( trait_ESPER_STARTER_ADVANCEMENT_OKAY ) ) {
         you.remove_mutation( trait_ESPER_STARTER_ADVANCEMENT_OKAY );
     }
+
+    // Add a trait to prevent later esper enkindling
+    you.set_mutation( trait_CANNOT_GAIN_PSIONICS );
 
     //Handle Thesholds changing/removal.
     auto highest_id = std::max_element( you.mutation_category_level.begin(),
@@ -836,9 +835,6 @@ class atm_menu
 {
     public:
         // menu choices
-        enum options : int {
-            cancel, purchase_card, deposit_money, withdraw_money, exchange_cash, transfer_all_money
-        };
 
         atm_menu()                           = delete;
         atm_menu( atm_menu const & )            = delete;
@@ -851,29 +847,24 @@ class atm_menu
         }
 
         void start() {
-            for( bool result = false; !result; ) {
-                switch( choose_option() ) {
-                    case purchase_card:
-                        result = do_purchase_card();
-                        break;
-                    case deposit_money:
-                        result = do_deposit_money();
-                        break;
-                    case withdraw_money:
-                        result = do_withdraw_money();
-                        break;
-                    case exchange_cash:
-                        result = do_exchange_cash();
-                        break;
-                    case transfer_all_money:
-                        result = do_transfer_all_money();
-                        break;
-                    default:
-                        return;
-                }
-                if( !you.activity.is_null() ) {
+            switch( choose_option() ) {
+                case purchase_card:
+                    do_purchase_card();
                     break;
-                }
+                case deposit_money:
+                    do_deposit_money();
+                    break;
+                case withdraw_money:
+                    do_withdraw_money();
+                    break;
+                case exchange_cash:
+                    do_exchange_cash();
+                    break;
+                case transfer_all_money:
+                    do_transfer_all_money();
+                    break;
+                default:
+                    return;
             }
         }
     private:
@@ -884,13 +875,10 @@ class atm_menu
             amenu.addentry( i, false, -1, title );
         }
 
-        options choose_option() {
-            if( you.activity.id() == ACT_ATM ) {
-                return static_cast<options>( you.activity.index );
-            }
+        atm_options choose_option() {
             amenu.query();
             uistate.iexamine_atm_selected = amenu.selected;
-            return amenu.ret < 0 ? cancel : static_cast<options>( amenu.ret );
+            return amenu.ret < 0 ? cancel : static_cast<atm_options>( amenu.ret );
         }
 
         //! Reset and repopulate the menu; with a fair bit of work this could be more efficient.
@@ -941,19 +929,6 @@ class atm_menu
             }
         }
 
-        //! print a bank statement for @p print = true;
-        void finish_interaction( const bool print = true ) {
-            if( print ) {
-                if( you.cash < 0 ) {
-                    add_msg( m_info, _( "Your debt is now %s." ), format_money( you.cash ) );
-                } else {
-                    add_msg( m_info, _( "Your account now holds %s." ), format_money( you.cash ) );
-                }
-            }
-
-            you.mod_moves( -to_moves<int>( 5_seconds ) );
-        }
-
         //! Prompt for an integral value clamped to [0, max].
         static int prompt_for_amount( const char *const msg, const int max ) {
             int amount = max;
@@ -970,13 +945,7 @@ class atm_menu
                 return false;
             }
 
-            item card( itype_cash_card, calendar::turn );
-            card.ammo_set( card.ammo_default(), 0 );
-            you.i_add( card );
-            you.cash -= 1000;
-            you.mod_moves( -to_moves<int>( 5_seconds ) );
-            finish_interaction();
-
+            you.assign_activity( atm_activity_actor( purchase_card ) );
             return true;
         }
 
@@ -997,25 +966,12 @@ class atm_menu
                 return false;
             }
 
-            add_msg( m_info, _( "You deposit %s into your account." ), format_money( amount ) );
-            you.use_charges( itype_cash_card, amount );
-            you.cash += amount;
-            you.mod_moves( -to_moves<int>( 10_seconds ) );
-            finish_interaction();
-
+            you.assign_activity( atm_activity_actor( deposit_money, amount ) );
             return true;
         }
 
         //!Move money from bank account onto cash card.
         bool do_withdraw_money() {
-            std::vector<item *> cash_cards_on_hand = you.cache_get_items_with( "is_cash_card",
-                    &item::is_cash_card );
-            if( cash_cards_on_hand.empty() ) {
-                //Just in case we run into an edge case
-                popup( _( "You do not have a cash card to withdraw money!" ) );
-                return false;
-            }
-
             const int amount = prompt_for_amount( n_gettext(
                     "Withdraw how much?  Max: %d cent.  (0 to cancel) ",
                     "Withdraw how much?  Max: %d cents.  (0 to cancel) ", you.cash ), you.cash );
@@ -1024,137 +980,23 @@ class atm_menu
                 return false;
             }
 
-            int inserted = 0;
-            int remaining = amount;
-
-            std::sort( cash_cards_on_hand.begin(), cash_cards_on_hand.end(), []( item * one, item * two ) {
-                int balance_one = one->ammo_remaining( );
-                int balance_two = two->ammo_remaining( );
-                return balance_one > balance_two;
-            } );
-
-            for( item * const &cc : cash_cards_on_hand ) {
-                if( inserted == amount ) {
-                    break;
-                }
-                int max_cap = cc->ammo_capacity( ammo_money ) - cc->ammo_remaining( );
-                int to_insert = std::min( max_cap, remaining );
-                // insert whatever there's room for + the old balance.
-                cc->ammo_set( cc->ammo_default(), to_insert + cc->ammo_remaining( ) );
-                inserted += to_insert;
-                remaining -= to_insert;
-            }
-
-            if( remaining ) {
-                add_msg( m_info, _( "All cash cards at maximum capacity." ) );
-            }
-
-            //dst->charges += amount;
-            you.cash -= amount - remaining;
-            you.mod_moves( -to_moves<int>( 10_seconds ) );
-            finish_interaction();
-
+            you.assign_activity( atm_activity_actor( withdraw_money, amount ) );
             return true;
         }
 
         //!Deposit pre-Cataclysm currency and receive equivalent amount minus fees on a card.
         bool do_exchange_cash() {
-            item *dst;
-            if( you.activity.id() == ACT_ATM ) {
-                dst = you.activity.targets.front().get_item();
-                you.activity.set_to_null();
-                if( dst->is_null() || dst->typeId() != itype_cash_card ) {
-                    debugmsg( "do_exchange_cash lost the destination card" );
-                    return false;
-                }
-            } else {
-                const std::vector<item *> cash_cards = you.cache_get_items_with( "is_cash_card",
-                                                       &item::is_cash_card );
-                if( cash_cards.empty() ) {
-                    popup( _( "You do not have a cash card." ) );
-                    return false;
-                }
-                dst = *std::max_element( cash_cards.begin(), cash_cards.end(), []( const item * a,
-                const item * b ) {
-                    return a->ammo_remaining( ) < b->ammo_remaining( );
-                } );
-                if( !query_yn( _( "Exchange all paper bills and coins in inventory?" ) ) ) {
-                    return false;
-                }
-            }
 
-            item *cash_item = nullptr;
-            you.visit_items( [&]( item * e, const item * ) {
-                if( e->type->has_flag( flag_OLD_CURRENCY ) ) {
-                    cash_item = e;
-                    return VisitResponse::ABORT;
-                }
-                return VisitResponse::NEXT;
-            } );
-            if( !cash_item ) {
+            if( !query_yn( _( "Exchange all paper bills and coins in inventory?" ) ) ) {
                 return false;
             }
-            // Feeding a bill into the machine takes at least one turn
-            you.mod_moves( -std::max( 100, you.get_moves() ) );
-            int value = units::to_cent( cash_item->type->price );
-            value *= 0.99;  // subtract fee
-            if( value > dst->ammo_capacity( ammo_money ) - dst->ammo_remaining( ) ) {
-                popup( _( "Destination card is full." ) );
-                return false;
-            }
-            if( cash_item->charges > 1 ) {
-                cash_item->charges--;
-            } else {
-                item_location( you, cash_item ).remove_item();
-            }
-            dst->ammo_set( dst->ammo_default(), dst->ammo_remaining( ) + value );
-            you.assign_activity( ACT_ATM, 0, exchange_cash );
-            you.activity.targets.emplace_back( you, dst );
+            you.assign_activity( atm_activity_actor( exchange_cash ) );
             return true;
         }
 
         //!Move the money from all the cash cards in inventory to a single card.
         bool do_transfer_all_money() {
-            item *dst;
-            std::vector<item *> cash_cards_on_hand = you.cache_get_items_with( "is_cash_card",
-                    &item::is_cash_card );
-            if( you.activity.id() == ACT_ATM ) {
-                dst = you.activity.targets.front().get_item();
-                you.activity.set_to_null(); // stop for now, if required, it will be created again.
-                if( dst->is_null() || dst->typeId() != itype_cash_card ) {
-                    debugmsg( "do_transfer_all_money lost the destination card" );
-                    return false;
-                }
-            } else {
-
-                if( cash_cards_on_hand.empty() ) {
-                    return false;
-                }
-                dst = *cash_cards_on_hand.begin();
-            }
-
-            for( item *i : cash_cards_on_hand ) {
-                if( i == dst || i->ammo_remaining( ) <= 0 || i->typeId() != itype_cash_card ) {
-                    continue;
-                }
-                if( you.get_moves() < 0 ) {
-                    // Money from `*i` could be transferred, but we're out of moves, schedule it for
-                    // the next turn. Putting this here makes sure there will be something to be
-                    // done next turn.
-                    you.assign_activity( ACT_ATM, 0, transfer_all_money );
-                    you.activity.targets.emplace_back( you, dst );
-                    break;
-                }
-                // should we check for max capacity here?
-                if( i->ammo_remaining( ) > dst->ammo_capacity( ammo_money ) - dst->ammo_remaining( ) ) {
-                    popup( _( "Destination card is full." ) );
-                    return false;
-                }
-                dst->ammo_set( dst->ammo_default(), i->ammo_remaining( ) + dst->ammo_remaining( ) );
-                i->ammo_set( i->ammo_default(), 0 );
-                you.mod_moves( -to_moves<int>( 1_seconds ) * 0.1 );
-            }
-
+            you.assign_activity( atm_activity_actor( transfer_all_money ) );
             return true;
         }
 
@@ -1954,6 +1796,18 @@ void iexamine::pit_covered( Character &you, const tripoint_bub_ms &examp )
         here.ter_set( examp, ter_t_pit_glass );
     }
     you.mod_moves( -to_moves<int>( 1_seconds ) );
+}
+
+void iexamine::thin_ice( Character &you, const tripoint_bub_ms &examp )
+{
+    map &here = get_map();
+    const trap &tr = here.tr_at( examp );
+    if( !you.knows_trap( examp ) ) {
+        you.add_msg_if_player( m_warning, _( "The ice looks thin and won't support your weight." ) );
+        you.add_known_trap( examp, tr );
+    } else {
+        you.add_msg_if_player( m_info, _( "The ice here is thin." ) );
+    }
 }
 
 
@@ -2761,10 +2615,8 @@ int iexamine::query_seed( const std::vector<seed_tuple> &seed_entries )
  */
 void iexamine::plant_seed( Character &you, const tripoint_bub_ms &examp, const itype_id &seed_id )
 {
-    player_activity act( ACT_PLANT_SEED, to_moves<int>( 30_seconds ) );
-    act.placement = get_map().get_abs( examp );
-    act.str_values.emplace_back( seed_id );
-    you.assign_activity( act );
+    plant_seed_activity_actor actor( get_map().get_abs( examp ), seed_id, 30_seconds );
+    you.assign_activity( actor );
 }
 
 /**
@@ -3124,7 +2976,7 @@ static void add_firestarter( item *it, std::multimap<int, item *> &firestarters,
     const use_function *usef = it->type->get_use( "firestarter" );
     if( usef != nullptr && usef->get_actor_ptr() != nullptr ) {
         const firestarter_actor *actor = dynamic_cast<const firestarter_actor *>( usef->get_actor_ptr() );
-        if( actor->can_use( you, *it, examp ).success() ) {
+        if( actor->can_use( you, *it, &get_map(), examp ).success() ) {
             firestarters.insert( std::pair<int, item *>( actor->moves_cost_fast, it ) );
         }
     }
@@ -3174,9 +3026,9 @@ static void pick_firestarter_and_fire( Character &you, const tripoint_bub_ms &ex
             const use_function *usef = it->type->get_use( "firestarter" );
             const firestarter_actor *actor = dynamic_cast<const firestarter_actor *>( usef->get_actor_ptr() );
             you.add_msg_if_player( _( "You attempt to start a fire with your %s…" ), it->tname() );
-            const ret_val<void> can_use = actor->can_use( you, *it, examp );
+            const ret_val<void> can_use = actor->can_use( you, *it, &get_map(), examp );
             if( can_use.success() ) {
-                const int charges = actor->use( &you, *it, examp ).value_or( 0 );
+                const int charges = actor->use( &you, *it, &get_map(), examp ).value_or( 0 );
                 you.use_charges( it->typeId(), charges );
                 return;
             } else {
@@ -3772,9 +3624,9 @@ void iexamine::fireplace( Character &you, const tripoint_bub_ms &examp )
                 const use_function *usef = it->type->get_use( "firestarter" );
                 const firestarter_actor *actor = dynamic_cast<const firestarter_actor *>( usef->get_actor_ptr() );
                 you.add_msg_if_player( _( "You attempt to start a fire with your %s…" ), it->tname() );
-                const ret_val<void> can_use = actor->can_use( you, *it, examp );
+                const ret_val<void> can_use = actor->can_use( you, *it, &get_map(), examp );
                 if( can_use.success() ) {
-                    const int charges = actor->use( &you, *it, examp ).value_or( 0 );
+                    const int charges = actor->use( &you, *it, &get_map(), examp ).value_or( 0 );
                     you.use_charges( it->typeId(), charges );
                     return;
                 } else {
@@ -4011,22 +3863,24 @@ void iexamine::fvat_full( Character &you, const tripoint_bub_ms &examp )
         }
 
         if( query_yn( _( "Finish brewing?" ) ) ) {
-            const std::map<itype_id, int> results = brew_i.brewing_results();
+            const std::map<std::pair<itype_id, std::string>, int> &results = brew_i.brewing_results();
             const int count = brew_i.count();
             const time_point birthday = brew_i.birthday();
 
             here.i_clear( examp );
-            for( const std::pair<const itype_id, int> &result : results ) {
+            for( const std::pair<const std::pair<itype_id, std::string>, int> &result : results ) {
                 int amount = result.second * count;
+                const itype_id &item_type = result.first.first;
                 // TODO: Different age based on settings
-                item booze( result.first, birthday );
-                if( result.first->phase == phase_id::LIQUID ) {
+                item booze( item_type, birthday );
+                booze.set_itype_variant( result.first.second );
+                if( item_type->phase == phase_id::LIQUID ) {
                     booze.charges = amount;
                     here.add_item( examp, booze );
-                    add_msg( _( "The %s is now ready for bottling." ), result.first->nname( amount ) );
+                    add_msg( _( "The %s is now ready for bottling." ), item_type->nname( amount ) );
                 } else {
                     you.i_add_or_drop( booze, amount );
-                    add_msg( _( "You remove the %s from the vat." ), result.first->nname( amount ) );
+                    add_msg( _( "You remove the %s from the vat." ), item_type->nname( amount ) );
                 }
             }
 
@@ -4253,18 +4107,20 @@ void iexamine::compost_full( Character &you, const tripoint_bub_ms &examp )
             }
             if( to_days<int>( progress ) >= 30 && gas_gatherable >= 1 ) {
                 if( query_yn( _( "Gather biogas?  Can't stop once releasing started." ) ) ) {
-                    const std::map<itype_id, int> results = compost_i.composting_results();
+                    const std::map<std::pair<itype_id, std::string>, int> &results = compost_i.composting_results();
                     const int count = compost_i.count();
                     const time_point gas_birthday = compost_i.birthday();
                     if( !max_gas_gatherable ) {
                         add_msg( _( "No biogas gathered." ) );
                     } else {
-                        for( const std::pair<const itype_id, int> &result : results ) {
-                            item biogas( result.first, gas_birthday );
+                        for( const std::pair<const std::pair<itype_id, std::string>, int> &result : results ) {
+
+                            item biogas( result.first.first, gas_birthday );
+                            biogas.set_itype_variant( result.first.second );
                             // 40 L biogas for 1 KG of biomass over the whole anaerobic digestion process.
                             // 1 unit of biomass(0.5 KG) for 80 units(0.25 L for each unit) of biogas.
                             int gas_amount = count * max_gas_gatherable * 80 / 30;
-                            if( result.first->phase == phase_id::GAS ) {
+                            if( result.first.first->phase == phase_id::GAS ) {
                                 if( !you.can_pickVolume_partial( biogas ) ) {
                                     add_msg( _( "You released some biogas from the tank." ) );
                                 } else {
@@ -4285,20 +4141,22 @@ void iexamine::compost_full( Character &you, const tripoint_bub_ms &examp )
         }
 
         if( query_yn( _( "Finish fermenting?" ) ) ) {
-            const std::map<itype_id, int> results = compost_i.composting_results();
+            const std::map<std::pair<itype_id, std::string>, int> &results = compost_i.composting_results();
             const int count = compost_i.count();
             const time_point birthday = compost_i.birthday();
 
             here.i_clear( examp );
-            for( const std::pair<const itype_id, int> &result : results ) {
+            for( const std::pair<const std::pair<itype_id, std::string>, int> &result : results ) {
                 int amount = result.second * count;
                 // TODO: Different age based on settings
-                item compost( result.first, birthday );
-                if( result.first->phase == phase_id::LIQUID ) {
+                const itype_id &item_type = result.first.first;
+                item compost( item_type, birthday );
+                compost.set_itype_variant( result.first.second );
+                if( item_type->phase == phase_id::LIQUID ) {
                     compost.charges = amount;
                     here.add_item( examp, compost );
-                    add_msg( _( "The %s is now ready for use." ), result.first->nname( amount ) );
-                } else if( result.first->phase == phase_id::GAS ) {
+                    add_msg( _( "The %s is now ready for use." ), item_type->nname( amount ) );
+                } else if( item_type->phase == phase_id::GAS ) {
                     int gas_amount = count * max_gas_gatherable * 80 / 30;
                     if( !gas_amount || !you.can_pickVolume_partial( compost ) ) {
                         add_msg( _( "You released some biogas from the tank." ) );
@@ -4309,7 +4167,7 @@ void iexamine::compost_full( Character &you, const tripoint_bub_ms &examp )
                     }
                 } else {
                     you.i_add_or_drop( compost, amount );
-                    add_msg( _( "You removed the %s from the tank." ), result.first->nname( amount ) );
+                    add_msg( _( "You removed the %s from the tank." ), item_type->nname( amount ) );
                 }
             }
 
@@ -4970,8 +4828,7 @@ void iexamine::part_con( Character &you, tripoint_bub_ms const &examp )
                 here.partial_con_remove( examp );
             }
         } else {
-            you.assign_activity( ACT_BUILD );
-            you.activity.placement = here.get_abs( examp );
+            you.assign_activity( build_construction_activity_actor( here.get_abs( examp ) ) );
         }
         return;
     }
@@ -5263,10 +5120,10 @@ void iexamine::sign( Character &you, const tripoint_bub_ms &examp )
                                         _( "Add a message to the sign?" );
             std::string ignore_message = _( "You leave the sign alone." );
             if( query_yn( query_message ) ) {
-                std::string signage = string_input_popup()
-                                      .title( _( "Write what?" ) )
-                                      .identifier( "signage" )
-                                      .query_string();
+                string_input_popup_imgui write_popup( 50 );
+                write_popup.set_label( _( "Write what?" ) );
+                write_popup.set_identifier( "signage" );
+                std::string signage = write_popup.query();
                 if( signage.empty() ) {
                     you.add_msg_if_player( m_neutral, ignore_message );
                 } else {
@@ -7688,6 +7545,7 @@ iexamine_functions iexamine_functions_from_string( const std::string &function_n
             { "portable_structure", &iexamine::portable_structure },
             { "pit", &iexamine::pit },
             { "pit_covered", &iexamine::pit_covered },
+            { "thin_ice", &iexamine::thin_ice },
             { "safe", &iexamine::safe },
             { "bulletin_board", &iexamine::bulletin_board },
             { "pedestal_wyrm", &iexamine::pedestal_wyrm },

@@ -101,7 +101,7 @@ void parse_tags( std::string &phrase, const_talker const &u, const_talker const 
 
 // Attitude is how we feel about the player, what we do around them
 enum npc_attitude : int {
-    NPCATT_NULL = 0, // Don't care/ignoring player The places this is assigned is on shelter NPC generation, and when you order a NPC to stay in a location, and after talking to a NPC that wanted to talk to you.
+    NPCATT_NULL = 0, // Don't care/ignoring player The places this is assigned is on shelter NPC generation, and when you order an NPC to stay in a location, and after talking to an NPC that wanted to talk to you.
     NPCATT_TALK,  // Move to and talk to player
     NPCATT_LEGACY_1,
     NPCATT_FOLLOW,  // Follow the player
@@ -176,7 +176,7 @@ enum npc_mission : int {
     NPC_MISSION_LEGACY_3,
 
     NPC_MISSION_GUARD_ALLY, // Assigns an allied NPC to guard a position
-    NPC_MISSION_GUARD, // Assigns an non-allied NPC to remain in place
+    NPC_MISSION_GUARD, // Assigns a non-allied NPC to remain in place
     NPC_MISSION_GUARD_PATROL, // Assigns a non-allied NPC to guard and investigate
     NPC_MISSION_ACTIVITY, // Perform a player_activity until it is complete
     NPC_MISSION_TRAVELLING
@@ -1288,7 +1288,7 @@ class npc : public Character
         float speed_rating() const override;
         /**
          * Note: this places NPC on a given position in CURRENT MAP coordinates.
-         * Do not use when placing a NPC in mapgen.
+         * Do not use when placing an NPC in mapgen.
          */
         void travel_overmap( const tripoint_abs_omt &pos );
         npc_attitude get_attitude() const override;
@@ -1351,7 +1351,7 @@ class npc : public Character
         tripoint_bub_ms wanted_item_pos; // The square containing an item we want
         // These are the coordinates that a guard will return to inside of their goal tripoint
         std::optional<tripoint_abs_ms> guard_pos;
-        // This is the spot the NPC wants to move to to sit and relax.
+        // This is the spot the NPC wants to move to sit and relax.
         std::optional<tripoint_abs_ms> chair_pos;
         std::optional<tripoint_abs_omt> base_location; // our faction base location in OMT coords.
         /**

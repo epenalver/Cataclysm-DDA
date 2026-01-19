@@ -76,9 +76,10 @@
       "makeshift_scythe_war": 24.5,
       "bill_hook": 32.4,
       "spear_dory": 28.0,
+      "naginata_machete_temp": 28.6,
       "qiang": 30.68,
       "lucern_hammer": 31.5,
-      "glaive": 33.87,
+      "glaive": 33.12,
       "naginata": 33.97,
       "poleaxe": 34.5,
       "scythe_war": 34.59,
@@ -97,6 +98,9 @@
       "cavalry_sabre": 24.2,
       "mc_cavalry_sabre": 24.233,
       "khopesh": 24.26,
+      "hc_khopesh": 26.33,
+      "ch_khopesh": 27.36,
+      "qt_khopesh": 28.3,
       "hc_wakizashi": 24.6,
       "ch_scimitar": 25.0,
       "ch_cutlass": 25.4,
@@ -222,13 +226,18 @@
       "hammer_sledge": 20.0,
       "2h_club_kanabo_studded": 25.16,
       "2h_club_kanabo_spiked": 25.65,
-      "warhammer": 36.33
+      "warhammer": 36.33,
+      "lc_warhammer": 30.6,
+      "mc_warhammer": 36.33,
+      "hc_warhammer": 37.39,
+      "ch_warhammer": 38.5,
+      "qt_warhammer": 39.44
     }
   },
   {
     "type": "test_data",
     "//": "flails",
-    "expected_dps": { "2h_flail_steel": 21.0, "2h_flail_wood": 20.4, "homewrecker": 13.0 }
+    "expected_dps": { "2h_flail_steel": 21.0, "2h_flail_wood": 20.4 }
   },
   {
     "type": "test_data",

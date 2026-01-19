@@ -147,6 +147,7 @@ static const flag_id json_flag_EASY_DECONSTRUCT( "EASY_DECONSTRUCT" );
 static const flag_id json_flag_FLAT( "FLAT" );
 static const flag_id json_flag_JETPACK( "JETPACK" );
 static const flag_id json_flag_LEVITATION( "LEVITATION" );
+static const flag_id json_flag_PHASE_BACK( "PHASE_BACK" );
 static const flag_id json_flag_PLOWABLE( "PLOWABLE" );
 static const flag_id json_flag_PRESERVE_SPAWN_LOC( "PRESERVE_SPAWN_LOC" );
 static const flag_id json_flag_PROXIMITY( "PROXIMITY" );
@@ -161,8 +162,29 @@ static const item_group_id Item_spawn_data_EMPTY_GROUP( "EMPTY_GROUP" );
 static const item_group_id Item_spawn_data_default_zombie_clothes( "default_zombie_clothes" );
 static const item_group_id Item_spawn_data_default_zombie_items( "default_zombie_items" );
 
+static const itype_id itype_HEW_printout_data_amigara( "HEW_printout_data_amigara" );
+static const itype_id
+itype_HEW_printout_data_barricaded_church( "HEW_printout_data_barricaded_church" );
+static const itype_id itype_HEW_printout_data_cabin_reverb( "HEW_printout_data_cabin_reverb" );
+static const itype_id
+itype_HEW_printout_data_cabin_reverb_dimension( "HEW_printout_data_cabin_reverb_dimension" );
+static const itype_id itype_HEW_printout_data_exodii( "HEW_printout_data_exodii" );
+static const itype_id itype_HEW_printout_data_highlands( "HEW_printout_data_highlands" );
+static const itype_id itype_HEW_printout_data_labyrinth( "HEW_printout_data_labyrinth" );
+static const itype_id itype_HEW_printout_data_lixa( "HEW_printout_data_lixa" );
+static const itype_id itype_HEW_printout_data_monster_corpse( "HEW_printout_data_monster_corpse" );
+static const itype_id itype_HEW_printout_data_morgantown( "HEW_printout_data_morgantown" );
+static const itype_id itype_HEW_printout_data_physics_lab( "HEW_printout_data_physics_lab" );
+static const itype_id itype_HEW_printout_data_portal_storm( "HEW_printout_data_portal_storm" );
+static const itype_id itype_HEW_printout_data_radiosphere( "HEW_printout_data_radiosphere" );
+static const itype_id itype_HEW_printout_data_strange_temple( "HEW_printout_data_strange_temple" );
+static const itype_id itype_HEW_printout_data_vitrified( "HEW_printout_data_vitrified" );
 static const itype_id itype_battery( "battery" );
 static const itype_id itype_maple_sap( "maple_sap" );
+static const itype_id itype_mws_monster_corpse_weather_data( "mws_monster_corpse_weather_data" );
+static const itype_id itype_mws_portal_storm_weather_data( "mws_portal_storm_weather_data" );
+static const itype_id itype_mws_weather_data( "mws_weather_data" );
+static const itype_id itype_mws_weather_data_incomplete( "mws_weather_data_incomplete" );
 static const itype_id itype_nail( "nail" );
 static const itype_id itype_pipe( "pipe" );
 static const itype_id itype_rock( "rock" );
@@ -170,6 +192,7 @@ static const itype_id itype_scrap( "scrap" );
 static const itype_id itype_splinter( "splinter" );
 static const itype_id itype_steel_chunk( "steel_chunk" );
 static const itype_id itype_wire( "wire" );
+
 
 static const json_character_flag json_flag_ONE_STORY_FALL( "ONE_STORY_FALL" );
 static const json_character_flag
@@ -1023,23 +1046,9 @@ vehicle *map::move_vehicle( vehicle &veh, const tripoint_rel_ms &dp, const tiler
                 const int wheel_damage = vpi_wheel.wheel_info->contact_area / vehicle_grounded_wheel_area *
                                          vehicle_mass_kg * weight_to_damage_factor;
 
-                // We've already stored the damage the wheel will inflict, so now we can (possibly) damage the wheels from running stuff over.
-                // Also we stash the wheel messages so we can play them afterwards.
-                // This needs to happen before smashing the items on the ground so we can calculate wheel damage based on the properties of the items we ran over.
-                const std::vector<std::string> wheel_damage_messages = veh.handle_item_roadkill( this, wheel_p,
-                        vp_wheel );
-
                 //~ %1$s: vehicle name
-                smash_items( wheel_p, wheel_damage, string_format( _( "weight of %1$s" ), veh.disp_name() ) );
-
-                const bool player_is_driver = &get_player_character() == veh.get_driver( *this );
-                const bool player_sees_damage = get_player_character().sees( *this, wheel_p );
-                if( !wheel_damage_messages.empty() && ( player_is_driver || player_sees_damage ) ) {
-                    for( const std::string &msg : wheel_damage_messages ) {
-                        add_msg( m_bad, msg );
-                    }
-                }
-
+                smash_items( wheel_p, wheel_damage, string_format( _( "weight of %1$s" ), veh.disp_name() ),
+                             &vp_wheel, &veh );
             }
         }
     }
@@ -1826,6 +1835,7 @@ bool map::furn_set( const tripoint_bub_ms &p, const furn_id &new_furniture, cons
     }
     current_submap->set_furn( l, new_target_furniture );
     current_submap->set_map_damage( point_sm_ms( l ), 0 );
+    clear_original_terrain_at( p );
 
     // Set the dirty flags
     const furn_t &old_f = old_id.obj();
@@ -1997,6 +2007,62 @@ int map::get_map_damage( const tripoint_bub_ms &p ) const
         return 0;
     }
     return current_submap->get_map_damage( l );
+}
+
+bool map::has_original_terrain_at( const tripoint_bub_ms &p ) const
+{
+    if( !inbounds( p ) ) {
+        return false;
+    }
+    point_sm_ms l;
+    const submap *const current_submap = unsafe_get_submap_at( p, l );
+    if( current_submap == nullptr ) {
+        debugmsg( "Called has_original_terrain_at for unloaded submap" );
+        return false;
+    }
+    return current_submap->has_original_ter( l );
+}
+
+ter_id map::get_original_terrain_at( const tripoint_bub_ms &p ) const
+{
+    if( !inbounds( p ) ) {
+        return ter_id();
+    }
+    point_sm_ms l;
+    const submap *const current_submap = unsafe_get_submap_at( p, l );
+    if( current_submap == nullptr ) {
+        debugmsg( "Called get_original_terrain_at for unloaded submap" );
+        return ter_id();
+    }
+    return current_submap->get_original_ter( l );
+}
+
+void map::set_original_terrain_at( const tripoint_bub_ms &p, const ter_id &t )
+{
+    if( !inbounds( p ) ) {
+        return;
+    }
+    point_sm_ms l;
+    submap *const current_submap = unsafe_get_submap_at( p, l );
+    if( current_submap == nullptr ) {
+        debugmsg( "Called set_original_terrain_at for unloaded submap" );
+        return;
+    }
+    current_submap->set_original_ter( l, t );
+}
+
+void map::clear_original_terrain_at( const tripoint_bub_ms &p )
+{
+    if( !inbounds( p ) ) {
+        return;
+    }
+    point_sm_ms l;
+    submap *const current_submap = unsafe_get_submap_at( p, l );
+    if( current_submap == nullptr ) {
+        debugmsg( "Called clear_original_terrain_at for unloaded submap" );
+        return;
+    }
+    current_submap->clear_original_ter( l );
 }
 
 void map::set_map_damage( const tripoint_bub_ms &p, int dmg )
@@ -2277,6 +2343,8 @@ bool map::ter_set( const tripoint_bub_ms &p, const ter_id &new_terrain, bool avo
     }
     current_submap->set_ter( l, new_terrain );
     current_submap->set_map_damage( point_sm_ms( l ), 0 );
+    // Clear any recorded original terrain when terrain is explicitly set here.
+    clear_original_terrain_at( p );
 
     // Set the dirty flags
     const ter_t &old_t = old_id.obj();
@@ -2372,6 +2440,7 @@ std::string map::features( const tripoint_bub_ms &p ) const
     add_if( is_bashable( p ), _( "Smashable." ) );
     add_if( has_flag( ter_furn_flag::TFLAG_DIGGABLE, p ), json_flag_DIGGABLE->name() );
     add_if( has_flag( ter_furn_flag::TFLAG_PLOWABLE, p ), json_flag_PLOWABLE->name() );
+    add_if( has_flag( ter_furn_flag::TFLAG_PHASE_BACK, p ), json_flag_PHASE_BACK->name() );
     add_if( has_flag( ter_furn_flag::TFLAG_ROUGH, p ), _( "Rough." ) );
     add_if( has_flag( ter_furn_flag::TFLAG_UNSTABLE, p ), _( "Unstable." ) );
     add_if( has_flag( ter_furn_flag::TFLAG_SHARP, p ), _( "Sharp." ) );
@@ -3595,7 +3664,7 @@ bool map::has_nearby_fire( const tripoint_bub_ms &p, int radius ) const
         if( has_field_at( pt, fd_fire ) ) {
             return true;
         }
-        if( has_flag_ter_or_furn( ter_furn_flag::TFLAG_USABLE_FIRE, p ) ) {
+        if( has_flag_ter_or_furn( ter_furn_flag::TFLAG_USABLE_FIRE, pt ) ) {
             return true;
         }
     }
@@ -3824,7 +3893,8 @@ void map::collapse_at( const tripoint_bub_ms &p, const bool silent, const bool w
     // that's not handled for now
 }
 
-void map::smash_items( const tripoint_bub_ms &p, int power, const std::string &cause_message )
+void map::smash_items( const tripoint_bub_ms &p, int power, const std::string &cause_message,
+                       vehicle_part *vp_wheel, vehicle *veh )
 {
     if( !has_items( p ) || has_flag_ter_or_furn( ter_furn_flag::TFLAG_PLANT, p ) ) {
         return;
@@ -3838,11 +3908,24 @@ void map::smash_items( const tripoint_bub_ms &p, int power, const std::string &c
 
     std::vector<item> contents;
     map_stack items = i_at( p );
+    std::vector<std::string> wheel_damage_messages;
+    int damage_levels = 0;
+
     for( auto i = items.begin(); i != items.end() && power > 0; ) {
         if( i->made_of( phase_id::LIQUID ) ) {
             i++;
             continue;
         }
+
+        if( vp_wheel != nullptr && vehicle::hit_probability( *i, vp_wheel ) < rng_float( 0.0, 1.0 ) ) {
+            // The wheel missed the item.
+            continue;
+        }
+
+        if( vp_wheel != nullptr ) {
+            veh->damage_wheel_on_item( vp_wheel, *i, &damage_levels, &wheel_damage_messages );
+        }
+
         if( i->active ) {
             // Get the explosion item actor
             if( i->type->get_use( "explosion" ) != nullptr ) {
@@ -3951,6 +4034,30 @@ void map::smash_items( const tripoint_bub_ms &p, int power, const std::string &c
                                 _( "The %1$s damages the %2$s." ),
                                 cause_message,
                                 damaged_item_name );
+    }
+
+    if( damage_levels > 0 ) {
+        veh->damage_direct( bubble_map, *vp_wheel, damage_levels );
+
+        const bool player_is_driver = veh != nullptr && &get_player_character() == veh->get_driver( *this );
+        const bool player_sees_damage = get_player_character().sees( *this, p );
+
+        if( !wheel_damage_messages.empty() && ( player_is_driver || player_sees_damage ) ) {
+            for( const std::string &msg : wheel_damage_messages ) {
+                add_msg( m_bad, msg );
+            }
+        }
+
+        bool existing = false;
+        for( int wheel : veh->wheelcache ) {
+            if( veh->bub_part_pos( *this, veh->part( wheel ) ) == p ) {
+                existing = true;
+                break;
+            }
+        }
+        if( existing ) {
+            add_msg( m_bad, _( "The %s has been degraded by the damage" ), vp_wheel->name() );
+        }
     }
 
     for( const item &it : contents ) {
@@ -4250,6 +4357,10 @@ void map::bash_ter_furn( const tripoint_bub_ms &p, bash_params &params, bool rep
         // Handle error earlier so that we can assume smash_ter is true below
         debugmsg( "data/json/terrain.json does not have %s.bash.ter_set set!",
                   ter( p ).obj().id.c_str() );
+    } else if( has_original_terrain_at( p ) && ter( p )->has_flag( "PHASE_BACK" ) ) {
+        // If we have original terrain saved and the current terrain signals PHASE_BACK,
+        const ter_id orig = get_original_terrain_at( p );
+        ter_set( p, orig );
     } else if( params.bashing_from_above && ter_bash.ter_set_bashed_from_above ) {
         // If this terrain is being bashed from above and this terrain
         // has a valid post-destroy bashed-from-above terrain, set it
@@ -4354,6 +4465,13 @@ bash_params map::bash( const tripoint_bub_ms &p, const std::map<damage_type_id, 
     // If we still didn't bash anything solid (a vehicle) or a tile with SEALED flag, bash ter/furn
     if( !bsh.bashed_solid && !bashed_sealed ) {
         bash_ter_furn( p, bsh, repair_missing_ground );
+    }
+
+    // If the bash operation modified the tile (solid) then treat it as a
+    // deliberate map modification and clear any recorded original terrain
+    // to avoid incorrect phase-change reversion.
+    if( bsh.did_bash && bsh.bashed_solid ) {
+        clear_original_terrain_at( p );
     }
 
     return bsh;
@@ -4522,6 +4640,7 @@ void map::destroy( const tripoint_bub_ms &p, const bool silent )
     while( count <= 25 && bash( p, 999, silent, true ).success ) {
         count++;
     }
+    clear_original_terrain_at( p );
 }
 
 void map::destroy_furn( const tripoint_bub_ms &p, const bool silent )
@@ -4533,6 +4652,8 @@ void map::destroy_furn( const tripoint_bub_ms &p, const bool silent )
            bash( p, 999, silent, true ).success ) {
         count++;
     }
+
+    clear_original_terrain_at( p );
 }
 
 void map::destroy_vehicle( const tripoint_bub_ms &p, const bool silent )
@@ -4616,6 +4737,7 @@ void map::crush( const tripoint_bub_ms &p )
         vp->vehicle().damage( *this, vp->part_index(), rng( 100, 1000 ), damage_bash, false );
     }
 }
+
 double map::shoot( const tripoint_bub_ms &p, projectile &proj, const bool hit_items )
 {
     if( !inbounds( p ) ) {
@@ -4720,10 +4842,11 @@ double map::shoot( const tripoint_bub_ms &p, projectile &proj, const bool hit_it
     }
     dam = std::max( 0.0f, dam );
 
-    for( const ammo_effect &ae : ammo_effects::get_all() ) {
-        if( ammo_effects.count( ae.id ) > 0 ) {
-            if( x_in_y( ae.trail_chance, 100 ) ) {
-                add_field( p, ae.trail_field_type, rng( ae.trail_intensity_min, ae.trail_intensity_max ) );
+    // apply trail from ammo effect
+    for( const ammo_effect_str_id &ae_str : proj.proj_effects ) {
+        for( const trail_field_effect &trail : ae_str.obj().trail_field_types ) {
+            if( !trail.field_type.is_null() && x_in_y( trail.chance, 100 ) ) {
+                add_field( p, trail.field_type, rng( trail.intensity_min, trail.intensity_max ) );
             }
         }
     }
@@ -5465,7 +5588,7 @@ item &map::add_item( const tripoint_bub_ms &p, item new_item, int copies )
         if( new_item.has_flag( flag_BOMB ) && new_item.is_transformable() ) {
             //Convert a bomb item into its transformable version, e.g. incendiary grenade -> active incendiary grenade
             new_item.convert( dynamic_cast<const iuse_transform *>
-                              ( new_item.type->get_use( "transform" )->get_actor_ptr() )->target );
+                              ( new_item.type->get_use( "transform" )->get_actor_ptr() )->transform.target );
         }
         new_item.active = true;
     }
@@ -5670,6 +5793,125 @@ static void process_vehicle_items( vehicle &cur_veh, int part )
         }
     }
 
+    const bool mws_here = vpi.has_flag( VPFLAG_MWS ) && vp.enabled;
+    if( mws_here ) {
+        bool mws_finished = false;
+        vehicle_stack icheck = cur_veh.get_items( vp );
+        if( icheck.empty() ) {
+            add_msg( _( "The mobile weather station malfunctions and aborts the scan!" ) );
+            vp.enabled = false;
+        }
+        for( item &n : cur_veh.get_items( vp ) ) {
+            const time_duration cycle_time = 60_minutes;
+            const time_duration time_left = cycle_time - n.age();
+            if( ( n.typeId() == itype_mws_weather_data_incomplete ) &&
+                ( ( current_weather( cur_veh.pos_abs() ).str() == "portal_storm" ) ||
+                  ( current_weather( cur_veh.pos_abs() ).str() == "early_portal_storm" ) ||
+                  ( current_weather( cur_veh.pos_abs() ).str() == "distant_portal_storm" ) ||
+                  ( current_weather( cur_veh.pos_abs() ).str() == "close_portal_storm" ) ) ) {
+                n.set_flag( flag_MWS_PORTAL_STORM_DATA );
+            }
+            if( time_left <= 0_turns ) {
+                mws_finished = true;
+                vp.enabled = false;
+                if( n.typeId() == itype_mws_weather_data_incomplete ) {
+                    if( n.has_flag( flag_MWS_PORTAL_STORM_DATA ) ) {
+                        if( vpi.has_flag( VPFLAG_ADVANCED_MWS ) ) {
+                            cur_veh.add_item( here, vp, item( itype_HEW_printout_data_portal_storm, calendar::turn_zero ) );
+                        } else {
+                            cur_veh.add_item( here, vp, item( itype_mws_portal_storm_weather_data, calendar::turn_zero ) );
+                        }
+                    }
+                    cur_veh.remove_item( vp, &n );
+                }
+            } else if( calendar::once_every( 15_minutes ) ) {
+                add_msg( _( "The instruments on the mobile weather station silently rotate." ) );
+                break;
+            }
+        }
+        if( mws_finished ) {
+            add_msg( _( "The mobile weather station has finished its recording.  The printer whirs and the report sits ready to be torn away." ) );
+            cur_veh.add_item( here, vp, item( itype_mws_weather_data, calendar::turn_zero ) );
+            if( vpi.has_flag( VPFLAG_ADVANCED_MWS ) ) {
+                const tripoint_abs_omt veh_position = cur_veh.pos_abs_omt();
+                const tripoint_abs_omt closest_vitrified_farm = overmap_buffer.find_closest( veh_position,
+                        "unvitrified_orchard", 10, false );
+                const tripoint_abs_omt closest_lixa = overmap_buffer.find_closest( veh_position, "LIXA_surface_1a",
+                                                      10, false );
+                const tripoint_abs_omt closest_temple = overmap_buffer.find_closest( veh_position, "temple_stairs",
+                                                        10, false );
+                const tripoint_abs_omt closest_highlands = overmap_buffer.find_closest( veh_position,
+                        "highlands", 10, false );
+                const tripoint_abs_omt closest_exodii = overmap_buffer.find_closest( veh_position,
+                                                        "exodii_base_x0y0z0", 10, false );
+                const tripoint_abs_omt closest_labyrinth = overmap_buffer.find_closest( veh_position,
+                        "labyrinth_entrance", 10, false );
+                const tripoint_abs_omt closest_physics_lab = overmap_buffer.find_closest( veh_position,
+                        "microlab_portal_security1", 10, false );
+                const tripoint_abs_omt closest_amigara = overmap_buffer.find_closest( veh_position,
+                        "mine_amigara_finale_central", 10, false );
+                const tripoint_abs_omt closest_radiosphere = overmap_buffer.find_closest( veh_position,
+                        "radiosphere_radio_tower_top", 10, false );
+                const tripoint_abs_omt closest_barricaded_church = overmap_buffer.find_closest( veh_position,
+                        "xedra_rural_church", 10, false );
+                const tripoint_abs_omt closest_morgantown = overmap_buffer.find_closest( veh_position,
+                        "morgantown_2b", 10, false );
+                const tripoint_abs_omt closest_cabin_reverb = overmap_buffer.find_closest( veh_position,
+                        "cabin_3_reverberation", 10, false );
+                const tripoint_abs_omt closest_cabin_reverb_hint = overmap_buffer.find_closest( veh_position,
+                        "cabin_3_reverberation_hint", 10, false );
+                const tripoint_abs_omt closest_monster_corpse = overmap_buffer.find_closest( veh_position,
+                        "corpse_bowels_mid", 10, false );
+                if( trig_dist( veh_position, closest_vitrified_farm ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_vitrified, calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_lixa ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_lixa, calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_temple ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_strange_temple, calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_highlands ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_highlands, calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_exodii ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_exodii, calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_labyrinth ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_labyrinth, calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_physics_lab ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_physics_lab, calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_amigara ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_amigara, calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_barricaded_church ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_barricaded_church,
+                                                      calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_morgantown ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_morgantown, calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_cabin_reverb ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_cabin_reverb_dimension,
+                                                      calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_cabin_reverb_hint ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_cabin_reverb, calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_radiosphere ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_radiosphere, calendar::turn_zero ) );
+                }
+                if( trig_dist( veh_position, closest_monster_corpse ) < 1 ) {
+                    cur_veh.add_item( here, vp, item( itype_mws_monster_corpse_weather_data, calendar::turn_zero ) );
+                } else if( trig_dist( veh_position, closest_monster_corpse ) <= 10 ) {
+                    cur_veh.add_item( here, vp, item( itype_HEW_printout_data_monster_corpse, calendar::turn_zero ) );
+                }
+            }
+        }
+    }
+
     const int recharge_part_idx = cur_veh.part_with_feature( part, VPFLAG_RECHARGE, true );
     if( recharge_part_idx >= 0 ) {
 
@@ -5835,9 +6077,8 @@ void map::process_items_in_submap( submap &current_submap, const tripoint_rel_sm
         bool furniture_is_sealed = has_flag( ter_furn_flag::TFLAG_SEALED, map_location );
 
         map_stack items = i_at( map_location );
-
         process_map_items( *this, items, active_item_ref.item_ref, active_item_ref.parent,
-                           map_location, 1, flag,
+                           map_location, active_item_ref.insulation(), flag,
                            spoil_multiplier * active_item_ref.spoil_multiplier(),
                            furniture_is_sealed || active_item_ref.has_watertight_container() );
     }
@@ -6669,7 +6910,7 @@ bool map::mopsafe_field_at( const tripoint_bub_ms &p )
 }
 
 bool map::add_field( const tripoint_bub_ms &p, const field_type_id &type_id, int intensity,
-                     const time_duration &age, bool hit_player )
+                     const time_duration &age, bool hit_player, effect_source source )
 {
     if( !inbounds( p ) ) {
         return false;
@@ -6708,7 +6949,7 @@ bool map::add_field( const tripoint_bub_ms &p, const field_type_id &type_id, int
     current_submap->ensure_nonuniform();
     invalidate_max_populated_zlev( p.z() );
 
-    if( current_submap->get_field( l ).add_field( converted_type_id, intensity, age ) ) {
+    if( current_submap->get_field( l ).add_field( converted_type_id, intensity, age, source ) ) {
         //Only adding it to the count if it doesn't exist.
         if( !current_submap->field_count++ ) {
             get_cache( p.z() ).field_cache.set(
@@ -7715,7 +7956,7 @@ int map::coverage( const tripoint_bub_ms &p ) const
 // This method tries a bunch of initial offsets for the line to try and find a clear one.
 // Basically it does, "Find a line from any point in the source that ends up in the target square".
 std::vector<tripoint_bub_ms> map::find_clear_path( const tripoint_bub_ms &source,
-        const tripoint_bub_ms &destination ) const
+        const tripoint_bub_ms &destination, bool empty_on_fail ) const
 {
     // TODO: Push this junk down into the Bresenham method, it's already doing it.
     const point d( destination.xy().raw() - source.xy().raw() );
@@ -7734,8 +7975,13 @@ std::vector<tripoint_bub_ms> map::find_clear_path( const tripoint_bub_ms &source
             return line_to( source, destination, candidate_offset, 0 );
         }
     }
-    // If we couldn't find a clear LoS, just return the ideal one.
-    return line_to( source, destination, ideal_start_offset, 0 );
+    // If we couldn't find a clear LoS, depending on empty_on_fail
+    // return either the ideal one or an empty vector.
+    if( empty_on_fail ) {
+        return std::vector<tripoint_bub_ms>();
+    } else {
+        return line_to( source, destination, ideal_start_offset, 0 );
+    }
 }
 
 std::vector<tripoint_bub_ms> map::reachable_flood_steps( const tripoint_bub_ms &f, int range,
@@ -8426,6 +8672,17 @@ void map::loadn( const point_bub_sm &grid, bool update_vehicles )
 
         if( zlevels ) {
             add_tree_tops( { grid.x(), grid.y(), z } );
+        }
+        // When a submap is loaded into the reality bubble, apply
+        // temperature-based phase changes
+        const weather_generator &wgen = get_weather().get_cur_weather_gen();
+        const tripoint_abs_sm pos_sm = { grid_abs_sub.xy(), z };
+        const tripoint_abs_ms sm_abs_ms = project_to<coords::ms>( pos_sm );
+        const tripoint_bub_ms sm_origin = get_bub( sm_abs_ms );
+        for( int sx = 0; sx < SEEX; ++sx ) {
+            for( int sy = 0; sy < SEEX; ++sy ) {
+                temp_based_phase_change_at( sm_origin + point( sx, sy ), wgen );
+            }
         }
     }
 }
@@ -10642,6 +10899,21 @@ std::list<Creature *> map::get_creatures_in_radius( const tripoint_bub_ms &cente
     creature_tracker &creatures = get_creature_tracker();
     std::list<Creature *> creature_list;
     for( const tripoint_bub_ms &loc : points_in_radius( center, radius, radiusz ) ) {
+        Creature *tmp_critter = creatures.creature_at( loc );
+        if( tmp_critter != nullptr ) {
+            creature_list.push_back( tmp_critter );
+        }
+
+    }
+    return creature_list;
+}
+
+std::list<Creature *> map::get_creatures_in_radius_circ( const tripoint_bub_ms &center,
+        size_t radius, size_t radiusz ) const
+{
+    creature_tracker &creatures = get_creature_tracker();
+    std::list<Creature *> creature_list;
+    for( const tripoint_bub_ms &loc : points_in_radius_circ( center, radius, radiusz ) ) {
         Creature *tmp_critter = creatures.creature_at( loc );
         if( tmp_critter != nullptr ) {
             creature_list.push_back( tmp_critter );

@@ -26,6 +26,7 @@
 #include "coords_fwd.h"
 #include "damage.h"
 #include "debug.h"
+#include "dialogue_helpers.h"
 #include "effect_on_condition.h"
 #include "enum_conversions.h"
 #include "enums.h"
@@ -41,6 +42,7 @@
 #include "item_contents.h"
 #include "item_group.h"
 #include "item_pocket.h"
+#include "item_transformation.h"
 #include "itype.h"
 #include "iuse_actor.h"
 #include "mapdata.h"
@@ -140,6 +142,8 @@ static item_blacklist_t item_blacklist;
 
 std::unique_ptr<Item_factory> item_controller = std::make_unique<Item_factory>();
 std::set<std::string> Item_factory::repair_actions = {};
+
+using diag_value_or_var = value_or_var<diag_value, eoc_math, string_mutator<translation>>;
 
 static void migrate_mag_from_pockets( itype &def )
 {
@@ -1008,7 +1012,7 @@ void Item_factory::finalize_post_armor( itype &obj )
                                           pocket.type == pocket_type::MAGAZINE_WELL;
                 if( !pocket.rigid && pocket_is_standard ) {
                     // include the modifier for each individual pocket
-                    total_nonrigid_volume += pocket.max_contains_volume() * pocket.volume_encumber_modifier;
+                    total_nonrigid_volume += pocket.volume_capacity() * pocket.volume_encumber_modifier;
                 }
             }
             data.max_encumber = data.encumber + total_nonrigid_volume * data.volume_encumber_modifier /
@@ -1207,7 +1211,7 @@ void Item_factory::finalize_post_armor( itype &obj )
             for( const pocket_data &pocket : obj.pockets ) {
                 if( !pocket.rigid ) {
                     // include the modifier for each individual pocket
-                    total_nonrigid_volume += pocket.max_contains_volume() * pocket.volume_encumber_modifier;
+                    total_nonrigid_volume += pocket.volume_capacity() * pocket.volume_encumber_modifier;
                 }
             }
             data.max_encumber = data.encumber + total_nonrigid_volume * data.volume_encumber_modifier /
@@ -1762,9 +1766,6 @@ class iuse_function_wrapper : public iuse_actor
             : iuse_actor( type ), cpp_function( f ) { }
 
         ~iuse_function_wrapper() override = default;
-        std::optional<int> use( Character *p, item &it, const tripoint_bub_ms &pos ) const override {
-            return cpp_function( p, &it, pos );
-        }
         std::optional<int> use( Character *p, item &it, map */*here*/,
                                 const tripoint_bub_ms &pos ) const override {
             // TODO: Change cpp_function to be map aware.
@@ -1925,9 +1926,6 @@ void Item_factory::init()
     add_iuse( "ACIDBOMB_ACT", &iuse::acidbomb_act );
     add_iuse( "ADRENALINE_INJECTOR", &iuse::adrenaline_injector );
     add_iuse( "AFS_TRANSLOCATOR", &iuse::afs_translocator );
-    add_iuse( "ALCOHOL", &iuse::alcohol_medium );
-    add_iuse( "ALCOHOL_STRONG", &iuse::alcohol_strong );
-    add_iuse( "ALCOHOL_WEAK", &iuse::alcohol_weak );
     add_iuse( "ANTIBIOTIC", &iuse::antibiotic );
     add_iuse( "ANTICONVULSANT", &iuse::anticonvulsant );
     add_iuse( "ANTIFUNGAL", &iuse::antifungal );
@@ -1936,7 +1934,6 @@ void Item_factory::init()
     add_iuse( "BLECH", &iuse::blech );
     add_iuse( "BLECH_BECAUSE_UNCLEAN", &iuse::blech_because_unclean );
     add_iuse( "BOLTCUTTERS", &iuse::boltcutters );
-    add_iuse( "C4", &iuse::c4 );
     add_iuse( "CAMERA", &iuse::camera );
     add_iuse( "CAN_GOO", &iuse::can_goo );
     add_iuse( "COIN_FLIP", &iuse::coin_flip );
@@ -1971,8 +1968,6 @@ void Item_factory::init()
     add_iuse( "EXTINGUISHER", &iuse::extinguisher );
     add_iuse( "EYEDROPS", &iuse::eyedrops );
     add_iuse( "FILL_PIT", &iuse::fill_pit );
-    add_iuse( "FIRECRACKER", &iuse::firecracker );
-    add_iuse( "FIRECRACKER_PACK", &iuse::firecracker_pack );
     add_iuse( "FIRECRACKER_PACK_ACT", &iuse::firecracker_pack_act );
     add_iuse( "FISH_ROD", &iuse::fishing_rod );
     add_iuse( "FISH_TRAP", &iuse::fish_trap );
@@ -2023,7 +2018,6 @@ void Item_factory::init()
     add_iuse( "MEDITATE", &iuse::meditate );
     add_iuse( "METH", &iuse::meth );
     add_iuse( "MININUKE", &iuse::mininuke );
-    add_iuse( "MOLOTOV_LIT", &iuse::molotov_lit );
     add_iuse( "MOP", &iuse::mop );
     add_iuse( "MP3_ON", &iuse::mp3_on );
     add_iuse( "MULTICOOKER", &iuse::multicooker );
@@ -2046,11 +2040,9 @@ void Item_factory::init()
     add_iuse( "PURIFY_SMART", &iuse::purify_smart );
     add_iuse( "RADGLOVE", &iuse::radglove );
     add_iuse( "RADIOCAR", &iuse::radiocar );
-    add_iuse( "RADIOCARON", &iuse::radiocaron );
     add_iuse( "RADIOCONTROL", &iuse::radiocontrol );
     add_iuse( "RADIOCONTROL_TICK", &iuse::radiocontrol_tick );
     add_iuse( "RADIO_MOD", &iuse::radio_mod );
-    add_iuse( "RADIO_OFF", &iuse::radio_off );
     add_iuse( "RADIO_ON", &iuse::radio_on );
     add_iuse( "RADIO_TICK", &iuse::radio_tick );
     add_iuse( "BINDER_ADD_RECIPE", &iuse::binder_add_recipe );
@@ -2061,8 +2053,6 @@ void Item_factory::init()
     add_iuse( "ROBOTCONTROL", &iuse::robotcontrol );
     add_iuse( "SEED", &iuse::seed );
     add_iuse( "SEWAGE", &iuse::sewage );
-    add_iuse( "SHOCKTONFA_OFF", &iuse::shocktonfa_off );
-    add_iuse( "SHOCKTONFA_ON", &iuse::shocktonfa_on );
     add_iuse( "SIPHON", &iuse::siphon );
     add_iuse( "SMOKING", &iuse::smoking );
     add_iuse( "SOLARPACK", &iuse::solarpack );
@@ -2071,7 +2061,6 @@ void Item_factory::init()
     add_iuse( "STIMPACK", &iuse::stimpack );
     add_iuse( "STRONG_ANTIBIOTIC", &iuse::strong_antibiotic );
     add_iuse( "TAZER", &iuse::tazer );
-    add_iuse( "TAZER2", &iuse::tazer2 );
     add_iuse( "TELEPORT", &iuse::teleport );
     add_iuse( "THORAZINE", &iuse::thorazine );
     add_iuse( "TOWEL", &iuse::towel );
@@ -2490,9 +2479,17 @@ void Item_factory::check_definitions() const
                 msg += "empty product list\n";
             }
 
-            for( const std::pair<const itype_id, int> &b : type->brewable->results ) {
-                if( !has_template( b.first ) ) {
-                    msg += string_format( "invalid result id %s\n", b.first.c_str() );
+            for( const std::pair<const std::pair<itype_id, std::string>, int> &b : type->brewable->results ) {
+                if( !has_template( b.first.first ) ) {
+                    msg += string_format( "invalid result id %s\n", b.first.first.c_str() );
+                }
+                const std::vector<itype_variant_data> &variants = b.first.first->variants;
+                const auto has_variant = [&b]( const itype_variant_data & variant ) {
+                    return b.first.second == variant.id;
+                };
+                if( !b.first.second.empty() &&
+                    std::find_if( variants.begin(), variants.end(), has_variant ) == variants.end() ) {
+                    msg += string_format( "Invalid variant %s for result %s\n", b.first.second, b.first.first.c_str() );
                 }
             }
         }
@@ -2505,9 +2502,18 @@ void Item_factory::check_definitions() const
                 msg += "empty product list\n";
             }
 
-            for( const std::pair<const itype_id, int> &b : type->compostable->results ) {
-                if( !has_template( b.first ) ) {
-                    msg += string_format( "invalid result id %s\n", b.first.c_str() );
+            for( const std::pair<const std::pair<itype_id, std::string>, int> &b :
+                 type->compostable->results ) {
+                if( !has_template( b.first.first ) ) {
+                    msg += string_format( "invalid result id %s\n", b.first.first.c_str() );
+                }
+                const std::vector<itype_variant_data> &variants = b.first.first->variants;
+                const auto has_variant = [&b]( const itype_variant_data & variant ) {
+                    return b.first.second == variant.id;
+                };
+                if( !b.first.second.empty() &&
+                    std::find_if( variants.begin(), variants.end(), has_variant ) == variants.end() ) {
+                    msg += string_format( "Invalid variant %s for result %s\n", b.first.second, b.first.first.c_str() );
                 }
             }
         }
@@ -2535,6 +2541,17 @@ void Item_factory::check_definitions() const
             }
             if( type->can_use( "MA_MANUAL" ) && !type->book->martial_art ) {
                 msg += "has use_action MA_MANUAL but does not specify a martial art\n";
+            }
+            if( type->can_use( "learn_spell" ) ) {
+                const use_function learn_spell_action = *type->get_use( "learn_spell" );
+                const learn_spell_actor *actor_ptr = static_cast<const learn_spell_actor *>
+                                                     ( learn_spell_action.get_actor_ptr() );
+                for( const std::string &spell_str : actor_ptr->spells ) {
+                    const spell_id sp( spell_str );
+                    if( !sp.is_valid() ) {
+                        msg += string_format( "lists invalid spell in learn_spell use_action: '%s'\n", spell_str );
+                    }
+                }
             }
         }
         if( type->can_use( "MA_MANUAL" ) && !type->book ) {
@@ -2716,7 +2733,7 @@ void Item_factory::check_definitions() const
             for( const ammotype &at : type->tool->ammo_id ) {
                 check_ammo_type( msg, at );
             }
-            if( !type->tool->revert_msg.empty() && !type->revert_to ) {
+            if( !type->tool->revert_msg.empty() && !type->transform_into ) {
                 msg += "cannot specify revert_msg without revert_to\n";
             }
             if( !type->tool->subtype.is_empty() && !has_template( type->tool->subtype ) ) {
@@ -2748,9 +2765,10 @@ void Item_factory::check_definitions() const
             }
         }
 
-        if( type->revert_to && ( !has_template( *type->revert_to ) ||
-                                 type->revert_to->is_null() ) ) {
-            msg += string_format( "invalid revert_to property %s\n does not exist", type->revert_to->c_str() );
+        if( type->transform_into && ( !has_template( type->transform_into.value().target ) ||
+                                      type->transform_into.value().target.is_null() ) ) {
+            msg += string_format( "invalid revert_to property %s\n does not exist",
+                                  type->transform_into.value().target.c_str() );
         }
 
         if( msg.empty() ) {
@@ -3420,28 +3438,41 @@ void islot_comestible::deserialize( const JsonObject &jo )
     }
 }
 
+struct generic_result_reader : generic_typed_reader<generic_result_reader> {
+    static constexpr bool read_objects = true;
+    std::pair<std::pair<itype_id, std::string>, int> get_next( const JsonValue &jv ) const {
+        std::pair<std::pair<itype_id, std::string>, int> ret;
+        // "yeast": 2,
+        if( const JsonMember *jm = dynamic_cast<const JsonMember *>( &jv ) ) {
+            ret.first.first = itype_id( jm->name() );
+            jm->read( ret.second );
+            return ret;
+        }
+        // "yeast"
+        if( jv.test_string() ) {
+            jv.read( ret.first.first );
+            ret.second = 1;
+            return ret;
+        }
+        // { "item": "yeast", "count": 2, "variant": "foo" }
+        JsonObject jo = jv.get_object();
+        mandatory( jo, false, "item", ret.first.first );
+        optional( jo, false, "variant", ret.first.second, "" );
+        optional( jo, false, "count", ret.second, 1 );
+        return ret;
+    }
+};
+
 void islot_brewable::deserialize( const JsonObject &jo )
 {
     optional( jo, was_loaded, "brew_time", time, 1_turns );
-    if( jo.has_array( "brew_results" ) ) {
-        for( std::string entry : jo.get_string_array( "brew_results" ) ) {
-            results[itype_id( entry )] = 1;
-        }
-    } else {
-        mandatory( jo, was_loaded, "brew_results", results );
-    }
+    mandatory( jo, was_loaded, "brew_results", results, generic_result_reader{} );
 }
 
 void islot_compostable::deserialize( const JsonObject &jo )
 {
     optional( jo, was_loaded, "compost_time", time, 1_turns );
-    if( jo.has_array( "compost_results" ) ) {
-        for( std::string entry : jo.get_string_array( "compost_results" ) ) {
-            results[itype_id( entry )] = 1;
-        }
-    } else {
-        mandatory( jo, was_loaded, "compost_results", results );
-    }
+    mandatory( jo, was_loaded, "compost_results", results, generic_result_reader{} );
 }
 
 void islot_seed::deserialize( const JsonObject &jo )
@@ -3696,7 +3727,7 @@ void Item_factory::check_and_create_magazine_pockets( itype &def )
 
     pocket_data mag_data;
     mag_data.holster = true;
-    mag_data.volume_capacity = 200_liter;
+    mag_data.raw_volume_capacity = 200_liter;
     mag_data.max_contains_weight = 2000000_kilogram;
     mag_data.max_item_length = 2_km;
     mag_data.watertight = true;
@@ -4110,7 +4141,7 @@ void itype::load( const JsonObject &jo, std::string_view src )
         degrade_increments_ = std::isnan( adjusted_inc ) ? 0 : std::round( adjusted_inc );
     }
 
-    name = translation( translation::plural_tag() );
+    name.make_plural();
     mandatory( jo, was_loaded, "name", name );
     optional( jo, was_loaded, "conditional_names", conditional_names );
     optional( jo, was_loaded, "description", description );
@@ -4179,7 +4210,19 @@ void itype::load( const JsonObject &jo, std::string_view src )
     optional( jo, was_loaded, "techniques", techniques, auto_flags_reader<matec_id> {} );
 
     optional( jo, was_loaded, "countdown_interval", countdown_interval );
-    optional( jo, was_loaded, "revert_to", revert_to );
+
+    optional( jo, was_loaded, "transform_into", transform_into );
+
+    if( jo.has_member( "revert_to" ) ) {
+        item_transformation default_transformation;
+        transform_into = default_transformation;
+        mandatory( jo, was_loaded, "revert_to", transform_into.value().target );
+    }
+
+    if( jo.has_member( "revert_to" ) && jo.has_member( "transform_into" ) ) {
+        jo.throw_error_at( "transform_into",
+                           "Item specified both transform_into and revert_to: they're mutually exclusive" );
+    }
 
     //First, check for copy-from
     if( jo.has_member( "copy-from" ) ) {
@@ -4627,11 +4670,23 @@ void Item_factory::add_entry( Item_group &ig, const JsonObject &obj,
         use_modifier = true;
     }
 
-    if( obj.has_object( "faults" ) ) {
-        JsonObject jo = obj.get_object( "faults" );
-        int chance = jo.get_int( "chance", 100 );
-        for( std::string ids : jo.get_array( "id" ) ) {
-            modifier.faults.emplace_back( fault_id( ids ), chance );
+    if( obj.has_array( "faults" ) ) {
+        for( const JsonObject jo : obj.get_array( "faults" ) ) {
+            int chance = jo.get_int( "chance", 100 );
+            for( const JsonValue &ids : jo.get_array( "id" ) ) {
+                modifier.faults.emplace_back( fault_id( ids ), chance );
+            }
+        }
+        use_modifier = true;
+    }
+
+    if( obj.has_array( "variables" ) ) {
+        for( const JsonObject jo : obj.get_array( "variables" ) ) {
+            for( const JsonMember &jv : jo ) {
+                diag_value dv;
+                mandatory( jo, false, jv.name(), dv );
+                modifier.item_vars.insert( { jv.name(), dv } );
+            }
         }
         use_modifier = true;
     }

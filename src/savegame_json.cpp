@@ -259,7 +259,7 @@ static tripoint_bub_ms read_legacy_creature_pos( const JsonObject &data )
 
 void item_contents::serialize( JsonOut &json ) const
 {
-    if( !contents.empty() || !get_all_ablative_pockets().empty() || !additional_pockets.empty() ) {
+    if( !contents.empty() || !get_ablative_pockets().empty() || !additional_pockets.empty() ) {
         json.start_object();
 
         json.member( "contents", contents );
@@ -408,7 +408,12 @@ void player_activity::deserialize( const JsonObject &data )
     std::set<std::string> obs_activities {
         "ACT_PICKUP_MENU", // Remove after 0.I
         "ACT_VIEW_RECIPE", // Remove after 0.I
-        "ACT_ADV_INVENTORY" // Remove after 0.I
+        "ACT_ADV_INVENTORY", // Remove after 0.I
+        "ACT_EAT_MENU", // Remove after 0.J
+        "ACT_CONSUME_FOOD_MENU", // Remove after 0.J
+        "ACT_CONSUME_DRINK_MENU", // Remove after 0.J
+        "ACT_CONSUME_MEDS_MENU", // Remove after 0.J
+        "ACT_ARMOR_LAYERS" // Remove after 0.J
     };
     if( !data.read( "type", tmptype ) ) {
         // Then it's a legacy save.
@@ -431,8 +436,8 @@ void player_activity::deserialize( const JsonObject &data )
     // ACT_MIGRATION_CANCEL will clear the backlog and reset npc state
     // this may cause inconvenience but should avoid any lasting damage to npcs
     if( is_obsolete || ( has_actor && ( data.has_null( "actor" ) || !data.has_member( "actor" ) ) ) ) {
+        actor = std::make_unique<migration_cancel_activity_actor>( type );
         type = ACT_MIGRATION_CANCEL;
-        actor = std::make_unique<migration_cancel_activity_actor>();
     } else {
         data.read( "actor", actor );
     }
@@ -766,6 +771,8 @@ void Character::load( const JsonObject &data )
 
     data.read( "proficiencies", _proficiencies );
 
+    _proficiencies->migrate_proficiencies();
+
     // If the proficiency XP required has changed such that a proficiency is now known
     for( const proficiency_id &prof : _proficiencies->learning_profs() ) {
         if( _proficiencies->pct_practiced_time( prof ) >= prof->time_to_learn() ) {
@@ -783,6 +790,7 @@ void Character::load( const JsonObject &data )
     data.read( "moncams", moncams );
 
     data.read( "magic", magic );
+    magic->migrate_spells();
 
     data.read( "traits", my_traits );
     // If a trait has been migrated, we'll need to add it.
@@ -1124,6 +1132,7 @@ void Character::load( const JsonObject &data )
     data.read( "slow_rad", slow_rad );
     data.read( "scent", scent );
     data.read( "male", male );
+    data.read( "free_dodges_left", free_dodges_left );
     data.read( "cash", cash );
     data.read( "recoil", recoil );
     data.read( "book_chapters", book_chapters );
@@ -1292,6 +1301,8 @@ void Character::load( const JsonObject &data )
     data.read( "last_target", tmptar );
     data.read( "last_target_type", tmptartyp );
     data.read( "last_target_pos", last_target_pos );
+    data.read( "last_magic_target_pos", last_magic_target_pos );
+
     data.read( "ammo_location", ammo_location );
     // Fixes savefile with invalid last_target_pos.
     if( last_target_pos && *last_target_pos == tripoint_abs_ms::min ) {
@@ -1490,6 +1501,8 @@ void Character::store( JsonOut &json ) const
     // gender
     json.member( "male", male );
 
+    // Some misc values that are character-specific
+    json.member( "free_dodges_left", free_dodges_left );
     json.member( "cash", cash );
     json.member( "recoil", recoil );
     json.member( "book_chapters", book_chapters );
@@ -1515,6 +1528,8 @@ void Character::store( JsonOut &json ) const
     } else {
         json.member( "last_target_pos", last_target_pos );
     }
+
+    json.member( "last_magic_target_pos", last_magic_target_pos );
 
     json.member( "destination_point", destination_point );
 
@@ -1715,8 +1730,6 @@ void avatar::load( const JsonObject &data )
           object_type::NONE : static_cast<object_type>(
               std::distance( obj_type_name.begin(), iter ) ),
           grab_point );
-
-    data.read( "magic", magic );
 
     calc_mutation_levels();
     drench_mut_calc();
@@ -3941,6 +3954,8 @@ void Creature::load( const JsonObject &jsin )
         jsin.read( "effects", *effects );
     }
 
+    migrate_effects();
+
     // u/npc variables
     jsin.read( "values", values );
     // potentially migrate some values
@@ -3956,6 +3971,7 @@ void Creature::load( const JsonObject &jsin )
 
     jsin.read( "damage_over_time_map", damage_over_time_map );
 
+    // FIXME? dodges_left and blocks_left (members of Character, not Creature!) are not stored or read
     jsin.read( "blocks_left", num_blocks );
     jsin.read( "dodges_left", num_dodges );
     jsin.read( "num_blocks_bonus", num_blocks_bonus );
@@ -4994,6 +5010,7 @@ void submap::store( JsonOut &jsout ) const
                     jsout.write( cur.get_field_type().id() );
                     jsout.write( cur.get_field_intensity() );
                     jsout.write( cur.get_field_age() );
+                    cur.get_effect_source().serialize( jsout );
                 }
                 jsout.end_array();
             }
@@ -5010,6 +5027,18 @@ void submap::store( JsonOut &jsout ) const
         jsout.write( cosm.pos.y() );
         jsout.write( cosm.type );
         jsout.write( cosm.str );
+        jsout.end_array();
+    }
+    jsout.end_array();
+
+    // Output any recorded original terrain for phase reverts
+    jsout.member( "phase_reverts" );
+    jsout.start_array();
+    for( const auto &entry : original_terrain ) {
+        jsout.start_array();
+        jsout.write( entry.first.x() );
+        jsout.write( entry.first.y() );
+        jsout.write( entry.second.obj().id.str() );
         jsout.end_array();
     }
     jsout.end_array();
@@ -5255,18 +5284,20 @@ void submap::load( const JsonValue &jv, const std::string &member_name, int vers
                     field_type_str_id ft = field_type_str_id( type_value.get_string() );
                     const int intensity = field_json.next_int();
                     const int age = field_json.next_int();
+                    effect_source source;
+                    if( version >= 39 ) {
+                        const JsonObject source_obj = field_json.next_object();
+                        source.deserialize( source_obj );
+                    }
                     if( auto it = field_migrations.find( ft ); it != field_migrations.end() ) {
                         ft = it->second;
                     }
                     if( !ft.is_valid() ) {
                         debugmsg( "invalid field_type_str_id '%s'", ft.c_str() );
                     } else if( ft != field_type_str_id::NULL_ID() &&
-                               m->fld[i][j].add_field( ft.id(), intensity, time_duration::from_turns( age ) ) ) {
+                               m->fld[i][j].add_field( ft.id(), intensity, time_duration::from_turns( age ), source ) ) {
                         field_count++;
                     }
-                } else { // Handle removed int enum method
-                    field_json.next_value(); // Skip intensity
-                    field_json.next_value(); // Skip age
                 }
             }
         }
@@ -5307,6 +5338,18 @@ void submap::load( const JsonValue &jv, const std::string &member_name, int vers
             }
             if( cosmetic_entry.has_more() ) {
                 cosmetic_entry.throw_error( "Too many values for cosmetics" );
+            }
+        }
+    } else if( member_name == "phase_reverts" ) {
+        JsonArray pr_json = jv;
+        while( pr_json.has_more() ) {
+            JsonArray entry = pr_json.next_array();
+            int i = entry.next_int();
+            int j = entry.next_int();
+            const point_sm_ms p( i, j );
+            ter_str_id tstr = ter_str_id( entry.next_string() );
+            if( tstr.is_valid() ) {
+                original_terrain.emplace( p, tstr.id() );
             }
         }
     } else if( member_name == "spawns" ) {

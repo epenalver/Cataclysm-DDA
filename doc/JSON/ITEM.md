@@ -125,7 +125,7 @@ These fields can be read by any ITEM regardless of subtypes:
 "longest_side": "15 cm",                     // Length of longest item dimension. Default is cube root of volume.
 "light": 300,                                // How much light this item emits, like a flashlight. 10 is equal 1 tile of light, so 300 would illuminate 30 tiles circle around the player.
 "rigid": false,                              // For non-rigid items volume (and for worn items encumbrance) increases proportional to contents
-"insulation": 1,                             // (Optional, default = 1) If container or vehicle part, how much insulation should it provide to the contents
+"insulation": 1,                             // (Optional, default = 1) How much insulation should it provide to the contents as a vehicle part.
 "price": "1 USD",                                // Barter value of an item. Used as barter value only when price_postapoc isn't defined. For stackable items (ammo, comestibles) this is the price for stack_size charges. Can use string "cent", "cents", "dollar", "dollars", "USD", or "kUSD".
 "price_postapoc": "1 USD",                       // Barter value of an item post-Cataclysm. Can use string "cent", "cents", "dollar", "dollars", "USD", or "kUSD".
 "stackable": true,                           // This item can be stacked together, similarly to `charges`
@@ -252,24 +252,27 @@ ammo_effects define what effect the projectile, that you shoot, would have. List
 {
   "id": "AE_NULL",           // id of an effect
   "type": "ammo_effect",     // define it is an ammo effect
-  "aoe": {                   // this field would be spawned at the tile projectile hit
-    "field_type": "fd_fog",  // field, that would be spawned around the center of projectile; default "fd_null"
-    "intensity_min": 1,      // min intensity of the field; default 0
-    "intensity_max": 3,      // max intensity of the field; default 0
-    "radius": 5,             // radius of a field to spawn; default 1
-    "radius_z": 1,           // radius across z-level; default 0
-    "chance": 100,           // probability to spawn 1 unit of field, from 0 to 100; default 100
-    "size": 0,               // seems to be the threshold, where autoturret stops shooting the weapon to prevent friendly fire;; default 0
-    "check_passable": false, // if false, projectile is able to penetrate impassable terrains, if penetration is defined (like walls and windows); if true, projectile can't penetrate even the sheet of glass; default false
-    "check_sees": false,     // if false, field can be spawned behind the opaque wall (for example, behind the concrete wall); if true, it can't; default false
-    "check_sees_radius": 0   // if "check_sees" is true, and this value is smaller than "radius", this value is used as radius instead. The purpose nor reasoning is unknown, probably some legacy of mininuke, so just don't use it; default 0
-  },
-  "trail": {                 // this field would be spawned across whole projectile path
+  "trigger_chance": 20,      // chance to run this specific ammo effect; default 100
+  "aoe": [ 
+    {                          // this field would be spawned at the tile projectile hit
+      "field_type": "fd_fog",  // field, that would be spawned around the center of projectile; default "fd_null"
+      "intensity_min": 1,      // min intensity of the field; default 0
+      "intensity_max": 3,      // max intensity of the field; default 0
+      "radius": 5,             // radius of a field to spawn; default 1
+      "radius_z": 1,           // radius across z-level; default 0
+      "chance": 100,           // probability to spawn 1 unit of field, from 0 to 100; default 100
+      "size": 0,               // seems to be the threshold, where autoturret stops shooting the weapon to prevent friendly fire;; default 0
+      "check_passable": false, // if false, projectile is able to penetrate impassable terrains, if penetration is defined (like walls and windows); if true, projectile can't penetrate even the sheet of glass; default   false
+    }
+  ],
+  "trail": [ 
+    {                        // this field would be spawned across whole projectile path
     "field_type": "fd_fog",  // field, that would be spawned; defautl "fd_null"
     "intensity_min": 1,      // min intensity of the field; default 0
     "intensity_max": 3,      // max intensity of the field; default 0
     "chance": 100            // probability to spawn 1 unit of field, from 0 to 100; default 100
-  },
+    }
+  ],
   "explosion": {             // explosion, that will happen at the tile that projectile hit
     "power": 0,              // mandatory; power of the explosion, in grams of tnt; pipebomb is about 300, grenade (without shrapnel) is 240
     "distance_factor": 0.8,  // how fast the explosion decay, closer to 1 mean lesser "power" loss per tile, 0.8 means 20% of power loss per tile; default 0.75, value should be bigger than 0, but lesser than 1
@@ -281,7 +284,7 @@ ammo_effects define what effect the projectile, that you shoot, would have. List
       "drop": "null"         // Which item to drop at landing point
     }
   },
-  "on_hit_effects": [        // This effects will be applied if body part is hit
+  "on_hit_effects": [        // These effects will be applied if body part is hit
     {
       "effect": "bile_stink",// id of an effect, mandatory
       "duration": "5 m",     // duration, mandatory
@@ -289,12 +292,24 @@ ammo_effects define what effect the projectile, that you shoot, would have. List
       "need_touch_skin": true// if true, and projectile is liquid, the target need to be soaked through for effect to be applied
     }
   ],
-  "do_flashbang": false,     // Creates a one tile radius EMP explosion at the hit location; default false
-  "do_emp_blast": false,     // Creates a hardcoded flashbang explosion; default false
+    "aoe_effects": [          // These effects will be applied on all monsters in area
+    {
+      "effect": "bile_stink", // id of an effect, mandatory
+      "duration": "5 m",      // duration, mandatory
+      "intensity_min": 1,     // min intensity of the field; default 1
+      "intensity_max": 3,     // max intensity of the field; default intensity_min
+      "radius": 5,            // radius of a field to spawn; default 1
+      "chance": 100,          // probability to apply the field on each separate creature in area, from 1 to 100; default 100
+    } 
+  ],
+  "do_flashbang": false,     // Creates a hardcoded flashbang explosion; default false
+  "do_emp_blast": false,     // Creates a one tile radius EMP explosion at the hit location; default false
   "foamcrete_build": false,  // Creates foamcrete fields and walls on the hit location, used in aftershock; default false
   "eoc": [ "EOC_CAUSE_PAIN", "EOC_CAUSE_VOMIT" ], // Runs EoC when hit the target. See EFFECT_ON_CONDITION.md#typical-alpha-and-beta-talkers-by-cases for more information
-  "spell_data": { "id": "bear_trap" }, // Spell, that would be casted when projectile hits an enemy
-  "spell_data": { "id": "release_the_deltas", "hit_self": true, "min_level": 10 }, // another example
+  "spell_data": [ 
+    { "id": "bear_trap" },   // Spell, that would be casted when projectile hits an enemy
+    { "id": "release_the_deltas", "hit_self": true, "min_level": 10 } // another example
+  ],
   "always_cast_spell ": false // if spell_data is used, and this is true, spell would be casted even if projectile did not deal any damage. Default false.
 }
 ```
@@ -471,7 +486,7 @@ According to <https://leathersupreme.com/leather-hide-thickness-in-leather-jacke
 * Fashion leather clothes such as thin leather jackets, skirts, and thin vests are 1.0mm or less.
 * Heavy leather clothes such as motorcycle suits average 1.5mm.
 
-From [this site](https://cci.one/site/marine/design-tips-fabrication-overview/tables-of-weights-and-measures/), an equivalency guideline for fabric weight to mm:
+From [this site](https://www.cci.one/tables-of-weights-measurements), an equivalency guideline for fabric weight to mm:
 
 | Cloth                         | oz/yd2 | g/m2  | Inches | mm   |
 | -----                         | ------ | ----- | ------ | ---- |
@@ -739,7 +754,7 @@ Any Item can be a container. To add the ability to contain things to an item, yo
     "item_restriction": [ "item_id" ],               // Only these item IDs can be placed into this pocket. Overrides ammo and flag restrictions.
     "material_restriction": [ "material_id" ],       // Only items that are mainly made of this material can enter.
 	// If multiple of "flag_restriction", "material_restriction" and "item_restriction" are used simultaneously then any item that matches any of them will be accepted.
-
+    "insulation": 1.0,                // Insulation value provided to items in this pocket.
     "sealed_data": { "spoil_multiplier": 0.0 },   // If a pocket has sealed_data, it will be sealed when the item spawns.  The sealed version of the pocket will override the unsealed version of the same datatype.
 
     "inherits_flags": true // Items in this pocket pass their flags to the parent item.
@@ -950,8 +965,19 @@ Gun mods can be defined like this:
 "initial_charges": 75,     // Charges when spawned
 "max_charges": 75,         // Maximum charges tool can hold
 "power_draw": "50 mW",     // Energy consumption per second
-"revert_to": "torch_done", // Transforms into item when charges are expended
-"revert_msg": "The torch fades out.", // Message, that would be printed, when revert_to is used
+"revert_to": "torch_done", // Transforms into item when charges are expended. Intended to be replaced by transform_into, which it's mutually exclusive with
+"transform_into": {        // Extended transformation info. To replace "revert_to", with which it's mutually exclusive. Optional.
+  "target": "torch_done",  // Item to transform into.
+  "target_group": "twisted_geometry", // If used, target is a random item from itemgroup
+  "variant_type": "condom_plain",     // (optional) Defaults to `<any>`. Specific variant type to set for the transformed item. Special string `<any>` will pick a random variant from all available variants, based on the variant's defined weight
+  "container": "jar_glass_sealed",    // "Container for the transformed item". Optional
+  "sealed": true,          // Whether the container if present, or transformed item otherwise, should be sealed. Optional.
+  "target_charges": 2,     // How many items should the transformation result in. Only works with items transformed into a container. Optional.
+  "rand_target_charges": [ 10, 15, 25 ], // Randomize the charges the transformed item has. This example has a 50% chance of rng(10, 15) charges and a 50% chance of rng(15, 25) (endpoints are included)
+  "target_ammo": 3,        // Number of charges (not count) the item should contain. Optional.
+  "target_timer": 1000     // Set up a timer for the transformed object. Optional.
+},
+"revert_msg": "The torch fades out.", // Message to be printed when revert_to or transform_into performs its transformation
 "sub": "hotplate",         // optional; this tool has the same functions as another tool
 "etransfer_rate": "30 MB"  // units::ememory, electronic transfer rate per second supported by this e-device
 "e_port": "USB-A",         // String defining connection type for fast file transfer; NOTE: if you want to use this for general connections, make a more general system, this is *only* for electronic devices that handle files
@@ -1002,7 +1028,8 @@ If an item is BREWABLE, it can be placed in a vat and will ferment into a differ
 "name": { "str_sp": "whiskey wort" },
 "description": "Unfermented whiskey.  The base of a fine drink.  Not the traditional preparation, but you don't have the time.  You need to put it in a fermenting vat to brew it.",
 "brew_time": "7 days",  // A time duration: how long the fermentation will take.
-"brew_results": [ "wash_whiskey", "yeast" ], // IDs with a multiplier for the amount of results per charge of the brewable items.
+"brew_results": [ "wash_whiskey", { "item": "yeast", "variant": "foo", "count": 3 } ], // IDs with a multiplier for the amount of results per charge of the brewable items.
+"brew_results": { "wash_whiskey": 2, "yeast": 3 }, // Alternate format
 ...
 //comestible fields
 ```
@@ -1024,6 +1051,7 @@ If an item is BREWABLE, it can be placed in a vat and will ferment into a differ
 "charges": 1,
 "compost_time": "60 days", // the amount of time required to fully compost this item
 "compost_results": { "fermented_fertilizer_liquid": 1, "biogas": 250 }, //item IDs and quantities resulting from compost
+"compost_results": [ "fermented_fertilizer_liquid", { "item": "biogas", "variant": "foo", "count": "250" } ], // alternate format
 ...
 //COMESTIBLE fields
 ```
@@ -1162,9 +1190,10 @@ The contents of `use_action` fields can either be a string indicating a built-in
   "target": "gasoline_lantern_on",          // The item to transform to
   "target_group": "twisted_geometry",       // If used, target is a random item from itemgroup
   "variant_type": "condom_plain",           // (optional) Defaults to `<any>`. Specific variant type to set for the transformed item. Special string `<any>` will pick a random variant from all available variants, based on the variant's defined weight
-  "active": true,                           // Whether the item is active once transformed
   "ammo_scale": 0,                          // For use when an item automatically transforms into another when its ammo drops to 0, or to allow guns to transform with 0 ammo
   "msg": "You turn the lamp on.",           // Message to display when activated
+  "target_timer": 0,                        // (Optional) Set timer on transformed item. Mutually exclusive with set_timer.
+  "set_timer": false,                       // (optional) When true, asks PC to set a timer. An NPC uses the default of the transformed item.
   "need_fire": 1,                           // Whether fire is needed to activate
   "need_fire_msg": "You need a lighter!",   // Message to display if there is no fire
   "need_charges": 1,                        // Number of charges the item needs to transform
@@ -1181,7 +1210,8 @@ The contents of `use_action` fields can either be a string indicating a built-in
   "container": "jar",                       // Container holding the target item
   "sealed": true,                           // Whether the transformed container is sealed; true by default
   "menu_text": "Lower visor",               // (optional) Text displayed in the activation screen. Defaults to "Turn on"
-  "moves": 500                              // Moves required to transform the item in excess of a normal action
+  "moves": 500,                             // Moves required to transform the item in excess of a normal action
+  "chance": 20                              // x in 100 chance to actually activate the item. Intended to be used in pair with tick_action
 },
 "use_action": {
   "type": "explosion",               // An item that explodes when it runs out of charges
@@ -1197,7 +1227,8 @@ The contents of `use_action` fields can either be a string indicating a built-in
   "fields_min_intensity": 3,         // Minimum intensity of field generated by the explosion
   "fields_max_intensity": 3,         // Maximum intensity of field generated by the explosion
   "emp_blast_radius": 4,             // The radius of EMP blast created by the explosion
-  "scrambler_blast_radius": 4        // The radius of scrambler blast created by the explosion
+  "scrambler_blast_radius": 4,       // The radius of scrambler blast created by the explosion
+  "effects": [ "MOLOTOV" ]           // List of ammo effects that would be applied when item is activated. TODO replace most of fields above with this
 },
 "use_action": {
   "type": "change_scent",              // Change the scent type of the user
@@ -1242,7 +1273,7 @@ The contents of `use_action` fields can either be a string indicating a built-in
 "use_action": {
   "type": "place_monster",          // Place a turret / manhack / whatever monster on the map
   "monster_id": "mon_manhack",      // Monster ID, see monsters.json
-  "difficulty": 4,                  // Difficulty for programming it (manhacks have 4, turrets 6, etc.)
+  "difficulty": 4,                  // Difficulty for programming it (manhacks have 4, turrets 6, etc.). Negative means it always is hostile.
   "hostile_msg": "It's hostile!",   // (optional) Message when programming the monster failed and it's hostile
   "friendly_msg": "Good!",          // (optional) Message when the monster is programmed properly and it's friendly
   "place_randomly": true,           // Places the monster randomly around the player or lets the player decide where to put it (default: false)
@@ -1304,7 +1335,8 @@ The contents of `use_action` fields can either be a string indicating a built-in
   "type": "firestarter",  // Start a fire, like with a lighter.
   "moves": 15,            // Number of moves it takes to start the fire. This is reduced by survival skill
   "moves_slow": 1500,     // Number of moves it takes to start a fire on something that is difficult to ignite. This is reduced by survival skill
-  "need_sunlight": true   // Whether the character needs to be in direct sunlight, e.g. to use magnifying glasses
+  "need_sunlight": true,   // Whether the character needs to be in direct sunlight, e.g. to use magnifying glasses,
+  "qualities_needed": { "WRENCH_FINE": 1 } // Tool qualities needed, e.g. "fine bolt turning 1"
 },
 "use_action": {
   "type": "unpack",                 // Unpack this item
@@ -1464,6 +1496,7 @@ The contents of `use_action` fields can either be a string indicating a built-in
   "type": "sound",            // Makes sound
   "name": "Turn on",          // Optional name for the action. Default "Activate"
   "sound_message": "Bzzzz.",  // message shown to player if they are able to hear the sound. %s is replaced by item name
+  "sound_type": "alarm",      // type of the sound emitted. Default "alarm". Possible types are "background", "weather", "sensory", "music", "movement", "speech", "electronic_speech", "activity", "destructive_activity", "alarm", "combat", "alert", "order"
   "sound_id": "misc",         // ID of the audio to be played. Default "misc". See SOUNDPACKS.md for more details
   "sound_variant": "default", // Default is "default"
   "sound_volume": 5           // Loudness of the noise

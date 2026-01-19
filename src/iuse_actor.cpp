@@ -1,12 +1,11 @@
 #include "iuse_actor.h"
 
-#include <imgui/imgui.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
-#include <cwctype>
 #include <functional>
+#include <imgui/imgui.h>
 #include <iterator>
 #include <limits>
 #include <list>
@@ -21,7 +20,6 @@
 #include "bodypart.h"
 #include "calendar.h"
 #include "cata_imgui.h"
-#include "catacharset.h"
 #include "character.h"
 #include "character_id.h"
 #include "clothing_mod.h"
@@ -37,6 +35,7 @@
 #include "dialogue_helpers.h"
 #include "effect.h"
 #include "effect_on_condition.h"
+#include "effect_source.h"
 #include "enum_conversions.h"
 #include "enums.h"
 #include "explosion.h"
@@ -48,12 +47,14 @@
 #include "generic_factory.h"
 #include "iexamine.h"
 #include "inventory.h"
+#include "input_popup.h"
 #include "item.h"
 #include "item_components.h"
 #include "item_contents.h"
 #include "item_group.h"
 #include "item_location.h"
 #include "item_pocket.h"
+#include "item_transformation.h"
 #include "itype.h"
 #include "magic.h"
 #include "magic_enchantment.h"
@@ -77,6 +78,7 @@
 #include "player_activity.h"
 #include "pocket_type.h"
 #include "point.h"
+#include "projectile.h"
 #include "recipe.h"
 #include "recipe_dictionary.h"
 #include "requirements.h"
@@ -84,7 +86,6 @@
 #include "safe_reference.h"
 #include "sounds.h"
 #include "string_formatter.h"
-#include "string_input_popup.h"
 #include "talker.h"
 #include "translations.h"
 #include "trap.h"
@@ -102,9 +103,7 @@
 
 static const activity_id ACT_FIRSTAID( "ACT_FIRSTAID" );
 static const activity_id ACT_REPAIR_ITEM( "ACT_REPAIR_ITEM" );
-static const activity_id ACT_SPELLCASTING( "ACT_SPELLCASTING" );
 static const activity_id ACT_START_FIRE( "ACT_START_FIRE" );
-static const activity_id ACT_STUDY_SPELL( "ACT_STUDY_SPELL" );
 
 static const damage_type_id damage_acid( "acid" );
 static const damage_type_id damage_bash( "bash" );
@@ -223,39 +222,22 @@ std::unique_ptr<iuse_actor> iuse_transform::clone() const
 
 void iuse_transform::load( const JsonObject &obj, const std::string & )
 {
-    optional( obj, false, "target", target );
-    optional( obj, false, "target_group", target_group );
-
-    if( !target.is_empty() && !target_group.is_empty() ) {
-        obj.throw_error_at( "target_group", "Cannot use both target and target_group at once" );
-    }
+    transform.deserialize( obj );
 
     optional( obj, false, "msg", msg_transform );
-    optional( obj, false, "msg", msg_transform );
-    optional( obj, false, "variant_type", variant_type, "<any>" );
-    optional( obj, false, "container", container );
-    optional( obj, false, "sealed", sealed, true );
-    if( obj.has_member( "target_charges" ) && obj.has_member( "rand_target_charges" ) ) {
-        obj.throw_error_at( "target_charges",
-                            "Transform actor specified both fixed and random target charges" );
-    }
-    optional( obj, false, "target_charges", ammo_qty, -1 );
-    optional( obj, false, "rand_target_charges", random_ammo_qty );
-    if( random_ammo_qty.size() == 1 ) {
-        obj.throw_error_at( "rand_target_charges",
-                            "You must specify two or more values to choose between" );
-    }
-    optional( obj, false, "target_ammo", ammo_type );
-
-    optional( obj, false, "target_timer", target_timer, 0_seconds );
-
-    if( !ammo_type.is_empty() && !container.is_empty() ) {
-        obj.throw_error_at( "target_ammo", "Transform actor specified both ammo type and container type" );
-    }
-
-    optional( obj, false, "active", active, false );
+    optional( obj, false, "sound_volume", sound_volume );
 
     optional( obj, false, "moves", moves, numeric_bound_reader<int> { 0 }, 0 );
+    optional( obj, false, "chance", chance, numeric_bound_reader<int> { 0, 100 }, 100 );
+
+    optional( obj, false, "set_timer", set_timer, false );
+
+    if( set_timer && transform.target_timer != 0_seconds ) {
+        obj.throw_error_at( "set_timer", "Cannot use both set_timer and target_timer at once" );
+    }
+
+    optional( obj, false, "damage_failure_msg", damage_failure_msg,
+              to_translation( "Activation of your damaged %s fails." ) );
 
     optional( obj, false, "need_fire", need_fire, numeric_bound_reader<int> { 0 }, 0 );
     optional( obj, false, "need_charges_msg", need_charges_msg, to_translation( "The %s is empty!" ) );
@@ -275,8 +257,12 @@ void iuse_transform::load( const JsonObject &obj, const std::string & )
 }
 
 std::optional<int> iuse_transform::use( Character *p, item &it, map *,
-                                        const tripoint_bub_ms & ) const
+                                        const tripoint_bub_ms &pos ) const
 {
+    if( !x_in_y( chance, 100 ) ) {
+        return 0;
+    }
+
     int scale = 1;
     auto iter = it.type->ammo_scale.find( type );
     if( iter != it.type->ammo_scale.end() ) {
@@ -302,8 +288,33 @@ std::optional<int> iuse_transform::use( Character *p, item &it, map *,
         }
     }
 
+    if( !it.activation_success() ) {
+        p->add_msg_if_player( m_bad,
+                              damage_failure_msg, it.tname() );
+        return std::nullopt;
+    }
+
+    int timer_time = 0;
+    bool got_timer_value = false;
+
+    if( set_timer && p->is_avatar() ) {
+        got_timer_value = query_int( timer_time, false,
+                                     _( "Set the timer to how many seconds (0 to cancel)?" ) );
+        if( !got_timer_value || timer_time <= 0 ) {
+            p->add_msg_if_player( _( "Never mind." ) );
+            return std::nullopt;
+        }
+
+        p->add_msg_if_player( n_gettext( "You set the timer to %d second.",
+                                         "You set the timer to %d seconds.", timer_time ), timer_time );
+    }
+
     if( !msg_transform.empty() ) {
         p->add_msg_if_player( m_neutral, msg_transform, it.tname() );
+
+        if( sound_volume > 0 ) {
+            sounds::sound( pos, sound_volume, sounds::sound_t::combat, msg_transform );
+        }
     }
 
     // Uses the moves specified by iuse_actor's definition
@@ -318,94 +329,30 @@ std::optional<int> iuse_transform::use( Character *p, item &it, map *,
         }
     }
 
-    if( target_group.is_empty() && it.count_by_charges() != target->count_by_charges() &&
+    if( transform.target_group.is_empty() &&
+        it.count_by_charges() != transform.target->count_by_charges() &&
         it.count() > 1 ) {
         item take_one = it.split( 1 );
-        do_transform( p, take_one, variant_type );
+        transform.transform( p, take_one );
         // TODO: Change to map aware operation when available
         p->i_add_or_drop( take_one );
     } else {
-        do_transform( p, it, variant_type );
+        transform.transform( p, it, true );
+    }
+
+    if( set_timer ) {
+        if( got_timer_value ) {
+            it.countdown_point = calendar::turn + time_duration::from_seconds( timer_time );
+        } else {
+            // Uses value from the converted type
+            it.countdown_point = calendar::turn + it.type->countdown_interval;
+        }
     }
 
     if( it.is_tool() ) {
         result = scale;
     }
     return result;
-}
-
-void iuse_transform::do_transform( Character *p, item &it, const std::string &variant_type ) const
-{
-    item obj_copy( it );
-    item *obj;
-    // defined here to allow making a new item assigned to the pointer
-    item obj_it;
-    if( container.is_empty() ) {
-        if( !target_group.is_empty() ) {
-            obj = &it.convert( item_group::item_from( target_group ).typeId(), p );
-        } else {
-            obj = &it.convert( target, p );
-            obj->set_itype_variant( variant_type );
-        }
-        if( ammo_qty >= 0 || !random_ammo_qty.empty() ) {
-            int qty;
-            if( !random_ammo_qty.empty() ) {
-                const int index = rng( 1, random_ammo_qty.size() - 1 );
-                qty = rng( random_ammo_qty[index - 1], random_ammo_qty[index] );
-            } else {
-                qty = ammo_qty;
-            }
-            if( !ammo_type.is_empty() ) {
-                obj->ammo_set( ammo_type, qty );
-            } else if( obj->is_ammo() ) {
-                obj->charges = qty;
-            } else if( !obj->ammo_current().is_null() ) {
-                obj->ammo_set( obj->ammo_current(), qty );
-            } else if( obj->has_flag( flag_RADIO_ACTIVATION ) && obj->has_flag( flag_BOMB ) ) {
-                obj->set_countdown( 1 );
-            } else {
-                obj->set_countdown( qty );
-            }
-        }
-    } else {
-        obj = &it.convert( container, p );
-        obj->set_itype_variant( variant_type );
-        int count = std::max( ammo_qty, 1 );
-        item cont;
-        if( !target_group.is_empty() ) {
-            cont = item( item_group::item_from( target_group ).typeId(), calendar::turn );
-        } else if( target->count_by_charges() ) {
-            cont = item( target, calendar::turn, count );
-            count = 1;
-        } else {
-            cont = item( target, calendar::turn );
-        }
-        for( int i = 0; i < count; i++ ) {
-            if( !it.put_in( cont, pocket_type::CONTAINER ).success() ) {
-                it.put_in( cont, pocket_type::MIGRATION );
-            }
-        }
-        if( sealed ) {
-            it.seal();
-        }
-    }
-
-    if( target_timer > 0_seconds ) {
-        obj->countdown_point = calendar::turn + target_timer;
-    }
-    obj->active = active || obj->has_temperature() || target_timer > 0_seconds;
-    if( p && p->is_worn( *obj ) ) {
-        if( !obj->is_armor() ) {
-            item_location il = item_location( *p, obj );
-            p->takeoff( il );
-        } else {
-            p->calc_encumbrance();
-            p->update_bodytemp();
-            p->on_worn_item_transform( obj_copy, *obj );
-        }
-    }
-
-    p->clear_inventory_search_cache();
 }
 
 ret_val<void> iuse_transform::can_use( const Character &p, const item &it,
@@ -425,7 +372,7 @@ ret_val<void> iuse_transform::can_use( const Character &p, const item &it,
     }
 
     if( p.is_worn( it ) ) {
-        item tmp = item( target );
+        item tmp = item( transform.target );
         if( !tmp.has_flag( flag_OVERSIZE ) && !tmp.has_flag( flag_INTEGRATED ) &&
             !tmp.has_flag( flag_SEMITANGIBLE ) ) {
             for( const trait_id &mut : p.get_functioning_mutations() ) {
@@ -439,7 +386,7 @@ ret_val<void> iuse_transform::can_use( const Character &p, const item &it,
     }
 
     if( need_charges && it.ammo_remaining( &p ) < need_charges ) {
-        return ret_val<void>::make_failure( string_format( need_charges_msg, it.tname() ) );
+        return ret_val<void>::make_failure( string_format( need_charges_msg.translated(), it.tname() ) );
     }
 
     if( qualities_needed.empty() ) {
@@ -477,13 +424,13 @@ std::string iuse_transform::get_name() const
 
 void iuse_transform::finalize( const itype_id &my_item_type )
 {
-    if( !item::type_is_defined( target ) && target_group.is_empty() ) {
-        debugmsg( "Invalid transform target: %s", target.c_str() );
+    if( !item::type_is_defined( transform.target ) && transform.target_group.is_empty() ) {
+        debugmsg( "Invalid transform target: %s", transform.target.c_str() );
     }
 
-    if( !container.is_empty() ) {
-        if( !item::type_is_defined( container ) ) {
-            debugmsg( "Invalid transform container: %s", container.c_str() );
+    if( !transform.container.is_empty() ) {
+        if( !item::type_is_defined( transform.container ) ) {
+            debugmsg( "Invalid transform container: %s", transform.container.c_str() );
         }
 
         // todo: check contents fit container?
@@ -497,9 +444,9 @@ void iuse_transform::finalize( const itype_id &my_item_type )
         // It is not unreasonable to want items that violate this assumption (one example is
         // the infamous Apple mouse which cannot be operated while charging),
         // but we don't have any of those implemented right now, so the check stays.
-        if( !target.obj().can_use( "link_up" ) ) {
+        if( !transform.target.obj().can_use( "link_up" ) ) {
             debugmsg( "Item %s has link_up action, yet transforms into %s which doesn't.",
-                      my_item_type.c_str(), target.c_str() );
+                      my_item_type.c_str(), transform.target.c_str() );
         }
     }
 }
@@ -507,44 +454,44 @@ void iuse_transform::finalize( const itype_id &my_item_type )
 void iuse_transform::info( const item &it, std::vector<iteminfo> &dump ) const
 {
 
-    if( !target_group.is_empty() ) {
+    if( !transform.target_group.is_empty() ) {
         dump.emplace_back( "TOOL", _( "Can transform into one of several items" ) );
         return;
     }
-    int amount = std::max( ammo_qty, 1 );
-    item dummy( target, calendar::turn, target->count_by_charges() ? amount : 1 );
-    dummy.set_itype_variant( variant_type );
+    int amount = std::max( transform.ammo_qty, 1 );
+    item dummy( transform.target, calendar::turn, transform.target->count_by_charges() ? amount : 1 );
+    dummy.set_itype_variant( transform.variant_type );
     // If the variant is to be randomized, use default no-variant name
-    if( variant_type == "<any>" ) {
+    if( transform.variant_type == "<any>" ) {
         dummy.clear_itype_variant();
     }
     if( it.has_flag( flag_FIT ) ) {
         dummy.set_flag( flag_FIT );
     }
-    if( target->count_by_charges() || !ammo_type.is_empty() ) {
-        if( !ammo_type.is_empty() ) {
+    if( transform.target->count_by_charges() || !transform.ammo_type.is_empty() ) {
+        if( !transform.ammo_type.is_empty() ) {
             dump.emplace_back( "TOOL", _( "<bold>Turns into</bold>: " ),
-                               string_format( _( "%s (%d %s)" ), dummy.tname(), amount, ammo_type->nname( amount ) ) );
-        } else if( !container.is_empty() ) {
+                               string_format( _( "%s (%d %s)" ), dummy.tname(), amount, transform.ammo_type->nname( amount ) ) );
+        } else if( !transform.container.is_empty() ) {
             dump.emplace_back( "TOOL", _( "<bold>Turns into</bold>: " ),
                                amount > 1 ?
                                string_format( _( "%s (%d %s)" ),
-                                              container->nname( 1 ), amount, target->nname( amount ) ) :
+                                              transform.container->nname( 1 ), amount, transform.target->nname( amount ) ) :
                                string_format( _( "%s (%s)" ),
-                                              container->nname( 1 ), target->nname( amount ) ) );
+                                              transform.container->nname( 1 ), transform.target->nname( amount ) ) );
         } else {
             dump.emplace_back( "TOOL", _( "<bold>Turns into</bold>: " ),
-                               string_format( _( "%s (%d)" ), target->nname( amount ), amount ) );
+                               string_format( _( "%s (%d)" ), transform.target->nname( amount ), amount ) );
         }
     } else {
         dump.emplace_back( "TOOL", _( "<bold>Turns into</bold>: " ),
                            amount > 1 ?
-                           string_format( _( "%d %s" ), amount, target->nname( amount ) ) :
-                           string_format( _( "%s" ), target->nname( amount ) ) );
+                           string_format( _( "%d %s" ), amount, transform.target->nname( amount ) ) :
+                           string_format( _( "%s" ), transform.target->nname( amount ) ) );
     }
 
-    if( target_timer > 0_seconds ) {
-        dump.emplace_back( "TOOL", _( "Countdown: " ), to_seconds<int>( target_timer ) );
+    if( transform.target_timer > 0_seconds ) {
+        dump.emplace_back( "TOOL", _( "Countdown: " ), to_seconds<int>( transform.target_timer ) );
     }
 
     const auto *explosion_use = dummy.get_use( "explosion" );
@@ -587,7 +534,7 @@ std::optional<int> unpack_actor::use( Character *p, item &it, map *here,
             last_armor = content;
         }
 
-        if( content.get_total_capacity() >= filthy_vol_threshold &&
+        if( content.get_volume_capacity() >= filthy_vol_threshold &&
             it.has_flag( flag_FILTHY ) ) {
             content.set_flag( flag_FILTHY );
         }
@@ -695,16 +642,9 @@ void sound_iuse::load( const JsonObject &obj, const std::string & )
     optional( obj, false, "name", name );
     optional( obj, false, "sound_message", sound_message );
     optional( obj, false, "sound_volume", sound_volume, 0 );
+    optional( obj, false, "sound_type", sound_type, enum_flags_reader<sounds::sound_t> { "alarm" } );
     optional( obj, false, "sound_id", sound_id, "misc" );
     optional( obj, false, "sound_variant", sound_variant, "default" );
-}
-
-std::optional<int> sound_iuse::use( Character *, item &,
-                                    const tripoint_bub_ms &pos ) const
-{
-    sounds::sound( pos, sound_volume, sounds::sound_t::alarm, sound_message.translated(), true,
-                   sound_id, sound_variant );
-    return 0;
 }
 
 std::optional<int> sound_iuse::use( Character *, item &,
@@ -713,7 +653,7 @@ std::optional<int> sound_iuse::use( Character *, item &,
     map &bubble_map = reality_bubble();
 
     if( bubble_map.inbounds( here->get_abs( pos ) ) ) {
-        sounds::sound( bubble_map.get_bub( here->get_abs( pos ) ), sound_volume, sounds::sound_t::alarm,
+        sounds::sound( bubble_map.get_bub( here->get_abs( pos ) ), sound_volume, sound_type,
                        sound_message.translated(), true,
                        sound_id, sound_variant );
     }
@@ -760,6 +700,7 @@ static std::vector<tripoint_bub_ms> points_for_gas_cloud( map *here, const tripo
 
 void explosion_iuse::load( const JsonObject &obj, const std::string & )
 {
+    optional( obj, false, "effects", ammo_effects, auto_flags_reader<ammo_effect_str_id> {} );
     optional( obj, false, "explosion", explosion );
     optional( obj, false, "draw_explosion_radius", draw_explosion_radius, -1 );
     optional( obj, false, "draw_explosion_color", draw_explosion_color, nc_color_reader{}, c_white );
@@ -780,21 +721,25 @@ void explosion_iuse::load( const JsonObject &obj, const std::string & )
 std::optional<int> explosion_iuse::use( Character *p, item &it, map *here,
                                         const tripoint_bub_ms &pos ) const
 {
-    if( explosion.power >= 0.0f ) {
-        Character *source = p;
-        if( it.has_var( "last_act_by_char_id" ) ) {
-            character_id thrower( it.get_var( "last_act_by_char_id", 0 ) );
-            if( thrower == get_player_character().getID() ) {
-                source = &get_player_character();
-            } else {
-                source = g->find_npc( thrower );
-            }
+    Character *source = p;
+    if( it.has_var( "last_act_by_char_id" ) ) {
+        character_id thrower( it.get_var( "last_act_by_char_id", 0 ) );
+        if( thrower == get_player_character().getID() ) {
+            source = &get_player_character();
+        } else {
+            source = g->find_npc( thrower );
         }
+    }
+
+    if( explosion.power >= 0.0f ) {
         explosion_handler::explosion( source, here, pos, explosion );
     }
 
+    apply_ammo_effects( source, pos, ammo_effects, 0 );
+
     map &bubble_map = reality_bubble();
 
+    // todo: potentially move all this custom explosion stuff to json ammo_effects?
     if( draw_explosion_radius >= 0 && bubble_map.inbounds( here->get_abs( pos ) ) ) {
         explosion_handler::draw_explosion( bubble_map.get_bub( here->get_abs( pos ) ),
                                            draw_explosion_radius, draw_explosion_color );
@@ -807,7 +752,7 @@ std::optional<int> explosion_iuse::use( Character *p, item &it, map *here,
         std::vector<tripoint_bub_ms> gas_sources = points_for_gas_cloud( here, pos, fields_radius );
         for( tripoint_bub_ms &gas_source : gas_sources ) {
             const int field_intensity = rng( fields_min_intensity, fields_max_intensity );
-            here->add_field( gas_source, fields_type, field_intensity, 1_turns );
+            here->add_field( gas_source, fields_type, field_intensity, 1_turns, true, effect_source( source ) );
         }
     }
     if( scrambler_blast_radius >= 0 ) {
@@ -1118,7 +1063,7 @@ std::optional<int> place_monster_iuse::use( Character *p, item &it, map *here,
         skill_offset += p->get_skill_level( sk ) / 2.0f;
     }
     /** @EFFECT_INT increases chance of a placed turret being friendly */
-    if( rng( 0, p->int_cur / 2 ) + skill_offset < rng( 0, difficulty ) ) {
+    if( difficulty < 0 || rng( 0, p->int_cur / 2 ) + skill_offset < rng( 0, difficulty ) ) {
         if( hostile_msg.empty() ) {
             p->add_msg_if_player( m_bad, _( "You deploy the %s wrong.  It is hostile!" ), newmon.name() );
         } else {
@@ -1449,6 +1394,7 @@ void firestarter_actor::load( const JsonObject &obj, const std::string & )
     optional( obj, false, "moves", moves_cost_fast, 100 );
     optional( obj, false, "moves_slow", moves_cost_slow, 1000 );
     optional( obj, false, "need_sunlight", need_sunlight, false );
+    optional( obj, false, "qualities_needed", qualities_needed );
 }
 
 std::unique_ptr<iuse_actor> firestarter_actor::clone() const
@@ -1572,7 +1518,7 @@ bool firestarter_actor::resolve_start( Character *p, map *here,
 {
     switch( type ) {
         case start_type::FIRE:
-            return here->add_field( pos, fd_fire, 1, 10_minutes );
+            return here->add_field( pos, fd_fire, 1, 10_minutes, true, effect_source( p ) );
         case start_type::SMOKER:
             return iexamine::smoker_fire( *p, pos );
         case start_type::KILN:
@@ -1597,6 +1543,30 @@ ret_val<void> firestarter_actor::can_use( const Character &p, const item &it,
     if( need_sunlight && light_mod( here, p.pos_bub( *here ) ) <= 0.0f ) {
         return ret_val<void>::make_failure( _( "You need direct sunlight to light a fire with this." ) );
     }
+
+    if( qualities_needed.empty() ) {
+        return ret_val<void>::make_success();
+    }
+
+    std::map<quality_id, int> unmet_reqs;
+    inventory inv;
+    inv.form_from_map( p.pos_bub( *here ), 1, &p, true, true );
+    for( const auto &quality : qualities_needed ) {
+        if( !p.has_quality( quality.first, quality.second ) &&
+            !inv.has_quality( quality.first, quality.second ) ) {
+            unmet_reqs.insert( quality );
+        }
+    }
+    if( unmet_reqs.empty() ) {
+        return ret_val<void>::make_success();
+    }
+    std::string unmet_reqs_string = enumerate_as_string( unmet_reqs.begin(), unmet_reqs.end(),
+    [&]( const std::pair<quality_id, int> &unmet_req ) {
+        return string_format( "%s %d", unmet_req.first.obj().name, unmet_req.second );
+    } );
+    return ret_val<void>::make_failure( n_gettext( "You need a tool with %s.",
+                                        "You need tools with %s.",
+                                        unmet_reqs.size() ), unmet_reqs_string );
 
     return ret_val<void>::make_success();
 }
@@ -1697,35 +1667,6 @@ void salvage_actor::load( const JsonObject &obj, const std::string & )
 std::unique_ptr<iuse_actor> salvage_actor::clone() const
 {
     return std::make_unique<salvage_actor>( *this );
-}
-
-std::optional<int> salvage_actor::use( Character *p, item &cutter, const tripoint_bub_ms & ) const
-{
-    if( !p ) {
-        debugmsg( "%s called action salvage that requires character but no character is present",
-                  cutter.typeId().str() );
-        return std::nullopt;
-    }
-
-    item_location item_loc = game_menus::inv::salvage( *p, this );
-    if( !item_loc ) {
-        add_msg( _( "Never mind." ) );
-        return std::nullopt;
-    }
-
-    const item &to_cut = *item_loc;
-    if( !to_cut.is_owned_by( *p, true ) ) {
-        if( !query_yn( _( "Cutting the %s may anger the people who own it, continue?" ),
-                       to_cut.tname() ) ) {
-            return false;
-        } else {
-            if( to_cut.get_owner() ) {
-                g->on_witness_theft( to_cut );
-            }
-        }
-    }
-
-    return salvage_actor::try_to_cut_up( *p, cutter, item_loc );
 }
 
 std::optional<int> salvage_actor::use( Character *p, item &cutter, map *,
@@ -2103,10 +2044,8 @@ bool inscribe_actor::item_inscription( item &tool, item &cut ) const
     }
 
     if( material_restricted && !cut.made_of_any( material_whitelist ) ) {
-        std::wstring lower_verb = utf8_to_wstr( verb.translated() );
-        std::transform( lower_verb.begin(), lower_verb.end(), lower_verb.begin(), towlower );
         add_msg( m_info, _( "You can't %1$s %2$s because of the material it is made of." ),
-                 wstr_to_utf8( lower_verb ), cut.display_name() );
+                 to_lower_case( verb.translated() ), cut.display_name() );
         return false;
     }
 
@@ -2142,18 +2081,14 @@ bool inscribe_actor::item_inscription( item &tool, item &cut ) const
                                 string_format( pgettext( "carving", "%1$s on the %2$s is: " ),
                                         gerund, cut.type_name() );
 
-    string_input_popup popup;
-    popup.title( string_format( _( "%s what?" ), verb ) )
-    .width( 64 )
-    .text( hasnote ? cut.get_var( carving ) : std::string() )
-    .description( messageprefix )
-    .identifier( "inscribe_item" )
-    .max_length( 128 )
-    .query();
-    if( popup.canceled() ) {
+    string_input_popup_imgui popup( 50, hasnote ? cut.get_var( carving ) : std::string() );
+    popup.set_label( string_format( _( "%s what?" ), verb ) );
+    popup.set_description( messageprefix );
+    popup.set_identifier( "inscribe_item" );
+    const std::string message = popup.query();
+    if( popup.cancelled() ) {
         return false;
     }
-    const std::string message = popup.text();
     if( message.empty() ) {
         cut.erase_var( carving );
         cut.erase_var( carving_tool );
@@ -2698,42 +2633,38 @@ std::optional<int> learn_spell_actor::use( Character *p, item &, map *,
     if( action < 0 ) {
         return std::nullopt;
     }
-    const bool knows_spell = p->magic->knows_spell( spells[action] );
-    player_activity study_spell( ACT_STUDY_SPELL,
-                                 p->magic->time_to_learn_spell( *p, spells[action] ) );
-    study_spell.str_values = {
-        "", // reserved for "until you gain a spell level" option [0]
-        "learn"
-    }; // [1]
-    study_spell.values = { 0, 0, 0 };
-    if( knows_spell ) {
-        study_spell.str_values[1] = "study";
-        const int study_time = uilist( _( "Spend how long studying?" ), {
-            { to_moves<int>( 30_minutes ), true, -1, _( "30 minutes" ) },
-            { to_moves<int>( 1_hours ), true, -1, _( "1 hour" ) },
-            { to_moves<int>( 2_hours ), true, -1, _( "2 hours" ) },
-            { to_moves<int>( 4_hours ), true, -1, _( "4 hours" ) },
-            { to_moves<int>( 8_hours ), true, -1, _( "8 hours" ) },
-            { 10100, true, -1, _( "Until you gain a spell level" ) }
-        } );
-        if( study_time <= 0 ) {
+    const spell_id selected_spell( spells[action] );
+
+    if( p->magic->knows_spell( selected_spell ) ) {
+        const std::array<time_duration, 5> ui_times =
+        { 30_minutes, 1_hours, 2_hours, 4_hours, 8_hours };
+        const std::vector<std::string> ui_entries = {
+            to_string( ui_times[0] ),
+            to_string( ui_times[1] ),
+            to_string( ui_times[2] ),
+            to_string( ui_times[3] ),
+            to_string( ui_times[4] ),
+            _( "Until you gain a spell level" )
+        };
+        const int ui_index = uilist( _( "Spend how long studying?" ), ui_entries );
+        if( ui_index < 0 ) {
             return std::nullopt;
         }
-        study_spell.moves_total = study_time;
-        spell &studying = p->magic->get_spell( spell_id( spells[action] ) );
+        if( ui_index == 5 ) {
+            p->assign_activity( study_spell_activity_actor( selected_spell,
+                                p->magic->get_spell( selected_spell ).get_level() + 1 ) );
+            return 0;
+        }
+        time_duration study_time = ui_times[ui_index];
+        spell &studying = p->magic->get_spell( selected_spell );
         if( studying.get_difficulty( *p ) < static_cast<int>( p->get_skill_level( studying.skill() ) ) ) {
             p->handle_skill_warning( studying.skill(),
                                      true ); // show the skill warning on start reading, since we don't show it during
         }
+        p->assign_activity( study_spell_activity_actor( selected_spell, study_time ) );
+        return 0;
     }
-    study_spell.moves_left = study_spell.moves_total;
-    if( study_spell.moves_total == 10100 ) {
-        study_spell.str_values[0] = "gain_level";
-        study_spell.values[0] = 0; // reserved for xp
-        study_spell.values[1] = p->magic->get_spell( spell_id( spells[action] ) ).get_level() + 1;
-    }
-    study_spell.name = spells[action];
-    p->assign_activity( study_spell );
+    p->assign_activity( study_spell_activity_actor( selected_spell ) );
     return 0;
 }
 
@@ -2796,26 +2727,10 @@ std::optional<int> cast_spell_actor::use( Character *p, item &it, map * /*here*/
         return 0;
     }
 
-    player_activity cast_spell( ACT_SPELLCASTING, casting.casting_time( *p ) );
-    // [0] this is used as a spell level override for items casting spells
-    cast_spell.values.emplace_back( spell_level );
-    if( no_fail ) {
-        // [1] if this value is 1, the spell never fails
-        cast_spell.values.emplace_back( 1 );
-    } else {
-        // [1]
-        cast_spell.values.emplace_back( 0 );
-    }
-    cast_spell.name = casting.id().c_str();
-    if( it.has_flag( flag_USE_PLAYER_ENERGY ) ) {
-        // [2] this value overrides the mana cost if set to 0
-        cast_spell.values.emplace_back( 1 );
-    } else {
-        // [2]
-        cast_spell.values.emplace_back( 0 );
-    }
-    p->assign_activity( cast_spell );
-    p->activity.targets.emplace_back( *p, &it );
+    p->assign_activity( spellcasting_activity_actor(
+                            time_duration::from_moves<int>( casting.casting_time( *p ) ),
+                            casting.id(), std::nullopt, spell_level,
+                            no_fail, it.has_flag( flag_USE_PLAYER_ENERGY ), item_location( *p, &it ) ) );
     // Actual handling of charges_to_use is in activity_handlers::spellcasting_finish
     return 0;
 }
@@ -2892,8 +2807,11 @@ std::optional<int> holster_actor::use( Character *you, item &it, map *here,
             if( opts.size() != it.num_item_stacks() ) {
                 ret--;
             }
-            auto iter = std::next( all_items.begin(), ret );
-            internal_item = *iter;
+            // If the action selected is Holster item / sheath item, then don't pick an item to use.
+            if( ret >= 0 ) {
+                auto iter = std::next( all_items.begin(), ret );
+                internal_item = *iter;
+            }
         }
     } else {
         if( !all_items.empty() ) {

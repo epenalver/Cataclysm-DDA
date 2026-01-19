@@ -33,6 +33,7 @@
 #include "game.h"
 #include "game_constants.h"
 #include "input_enums.h"
+#include "input_popup.h"
 #include "item.h"
 #include "level_cache.h"
 #include "line.h"
@@ -52,7 +53,6 @@
 #include "scent_map.h"
 #include "shadowcasting.h"
 #include "string_formatter.h"
-#include "string_input_popup.h"
 #include "submap.h"
 #include "translation.h"
 #include "translations.h"
@@ -145,11 +145,9 @@ void edit_json( SAVEOBJ &it )
             }
             fs2.clear();
         } else if( tmret == 1 ) {
-            string_input_popup popup;
-            std::string ret = popup
-                              .text( save1 )
-                              .query_string();
-            if( popup.confirmed() ) {
+            string_input_popup_imgui popup( 50, save1 );
+            std::string ret = popup.query();
+            if( !popup.cancelled() ) {
                 fs1 = fld_string( ret, TERMX - 10 );
                 save1 = ret;
                 tmret = -2;
@@ -1129,9 +1127,12 @@ void editmap::edit_feature()
 
     blink = true;
     bool quit = false;
+
+    // Hold list till end
+    shared_ptr_fast<uilist_impl> ui_impl;
     do {
         const T_id override( emenu.selected );
-        if( override ) {
+        if( override && emenu.selected != -1 ) {
             draw_target_override = [override]( const tripoint_bub_ms & p ) {
                 draw_override( p, override );
             };
@@ -1152,7 +1153,7 @@ void editmap::edit_feature()
         info_title_curr = info_title<T_t>();
         do_ui_invalidation();
 
-        emenu.query( true, get_option<int>( "BLINK_SPEED" ) );
+        ui_impl = emenu.query( false, get_option<int>( "BLINK_SPEED" ) );
         if( emenu.ret == UILIST_CANCEL ) {
             quit = true;
         } else if( ( emenu.ret >= 0 && static_cast<size_t>( emenu.ret ) < T_t::count() ) ||
@@ -1252,10 +1253,11 @@ void editmap::edit_fld()
     restore_on_out_of_scope info_title_prev( info_title_curr );
     map &here = get_map();
 
+    shared_ptr_fast<uilist_impl> ui_impl;
     blink = true;
     do {
         const field_type_id override( fmenu.selected );
-        if( override ) {
+        if( override && fmenu.selected != -1 ) {
             draw_target_override = [override]( const tripoint_bub_ms & p ) {
                 g->draw_field_override( p, override );
             };
@@ -1278,7 +1280,7 @@ void editmap::edit_fld()
         info_title_curr = pgettext( "Map editor: Editing field effects", "Field effects" );
         do_ui_invalidation();
 
-        fmenu.query( true, get_option<int>( "BLINK_SPEED" ) );
+        ui_impl = fmenu.query( false, get_option<int>( "BLINK_SPEED" ) );
         if( ( fmenu.ret > 0 && static_cast<size_t>( fmenu.ret ) < field_type::count() ) ||
             ( fmenu.ret == UILIST_ADDITIONAL && ( fmenu.ret_act == "LEFT" || fmenu.ret_act == "RIGHT" ) ) ) {
 
@@ -1479,20 +1481,18 @@ void editmap::edit_itm()
                             } );
                             break;
                     }
-                    string_input_popup popup;
                     int retval = 0;
                     bool confirmed = false;
                     if( imenu.ret < imenu_tags ) {
                         retval = intval;
                         confirmed = query_int( retval, true, "set:" );
                     } else if( imenu.ret == imenu_tags ) {
-                        strval = popup
-                                 .title( _( "Flags:" ) )
-                                 .description( "UPPERCASE, no quotes, separate with spaces:" )
-                                 .text( strval )
-                                 .query_string();
+                        string_input_popup_imgui popup( 50, strval, _( "Flags:" ) );
+                        popup.set_description( "UPPERCASE, no quotes, separate with spaces:" );
+                        strval = popup.query();
+                        confirmed = !popup.cancelled();
                     }
-                    if( popup.confirmed() || confirmed ) {
+                    if( confirmed ) {
                         switch( imenu.ret ) {
                             case imenu_bday:
                                 it.set_birthday( time_point::from_turn( retval ) );
@@ -1891,7 +1891,7 @@ void editmap::mapgen_preview( const real_coords &tc, uilist &gmenu )
                                          oter_id( gmenu.selected ).id().str() );
         do_ui_invalidation();
 
-        gpmenu.query( true, get_option<int>( "BLINK_SPEED" ) * 3 );
+        gpmenu.query( false, get_option<int>( "BLINK_SPEED" ) * 3 );
 
         if( gpmenu.ret == 0 ) {
             cleartmpmap( tmpmap );

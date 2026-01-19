@@ -16,6 +16,7 @@
 #include "coords_fwd.h"
 #include "damage.h"
 #include "explosion.h"
+#include "item_transformation.h"
 #include "iuse.h"
 #include "ret_val.h"
 #include "translation.h"
@@ -32,6 +33,10 @@ struct furn_t;
 
 enum class link_state : int;
 enum class ot_match_type : int;
+namespace sounds
+{
+enum class sound_t : int;
+} // namespace sounds
 
 /**
  * Transform an item into a specific type.
@@ -46,38 +51,13 @@ enum class ot_match_type : int;
 class iuse_transform : public iuse_actor
 {
     public:
+        item_transformation transform;
+
         /** displayed if player sees transformation with %s replaced by item name */
         translation msg_transform;
 
-        /** type of the resulting item */
-        itype_id target;
-
-        /** or one of items from itemgroup */
-        item_group_id target_group;
-
-        /** if set transform item to container and place new item (of type @ref target) inside */
-        itype_id container;
-
-        /** if set choose this variant when transforming */
-        std::string variant_type = "<any>";
-
-        /** whether the transformed container is sealed */
-        bool sealed = true;
-
-        /** if zero or positive set remaining ammo of @ref target to this (after transformation) */
-        int ammo_qty = -1;
-
-        /** if this has values, set remaining ammo of @ref target to one of them chosen at random (after transformation) */
-        std::vector<int> random_ammo_qty;
-
-        /** if positive set transformed item active and start countdown for countdown_action*/
-        time_duration target_timer = 0_seconds;
-
-        /** if both this and ammo_qty are specified then set @ref target to this specific ammo */
-        itype_id ammo_type;
-
-        /** used to set the active property of the transformed @ref target */
-        bool active = false;
+        /** If non zero, issues the msg_transform as a sound as well*/
+        int sound_volume = 0;
 
         /**does the item requires to be worn to be activable*/
         bool need_worn = false;
@@ -90,6 +70,17 @@ class iuse_transform : public iuse_actor
 
         /** subtracted from @ref Creature::moves when transformation is successful */
         int moves = 0;
+
+        /** x in 100 chance for this use action to be activated
+        intended to be used with tick action specifically
+        */
+        int chance = 100;
+
+        /** Asks you to set a timer for a countdown */
+        bool set_timer = false;
+
+        /** displayed if activation fails due to damage, with %s replaced by item name */
+        translation damage_failure_msg;
 
         /** minimum number of fire charges required (if any) for transformation */
         int need_fire = 0;
@@ -113,7 +104,7 @@ class iuse_transform : public iuse_actor
         ~iuse_transform() override = default;
         void load( const JsonObject &obj, const std::string & ) override;
         using iuse_actor::use;
-        std::optional<int> use( Character *, item &, map *, const tripoint_bub_ms & ) const override;
+        std::optional<int> use( Character *, item &, map *, const tripoint_bub_ms &pos ) const override;
         using iuse_actor::can_use;
         ret_val<void> can_use( const Character &, const item &, map *here,
                                const tripoint_bub_ms & ) const override;
@@ -121,8 +112,6 @@ class iuse_transform : public iuse_actor
         std::string get_name() const override;
         void finalize( const itype_id &my_item_type ) override;
         void info( const item &, std::vector<iteminfo> & ) const override;
-    private:
-        void do_transform( Character *p, item &it, const std::string &variant_type ) const;
 };
 
 class unpack_actor : public iuse_actor
@@ -196,13 +185,13 @@ class sound_iuse : public iuse_actor
 
         translation sound_message;
 
+        sounds::sound_t sound_type;
         int sound_volume = 0;
         std::string sound_id;
         std::string sound_variant;
 
         ~sound_iuse() override = default;
         void load( const JsonObject &obj, const std::string & ) override;
-        std::optional<int> use( Character *, item &, const tripoint_bub_ms &pos ) const override;
         std::optional<int> use( Character *, item &, map *, const tripoint_bub_ms & ) const override;
         std::unique_ptr<iuse_actor> clone() const override;
         std::string get_name() const override;
@@ -216,6 +205,9 @@ class sound_iuse : public iuse_actor
 class explosion_iuse : public iuse_actor
 {
     public:
+        // list of ammo effects this iuse applies
+        std::set<ammo_effect_str_id> ammo_effects;
+
         // Structure describing the explosion + shrapnel
         // Ignored if its power field is < 0
         explosion_data explosion;
@@ -523,6 +515,9 @@ class firestarter_actor : public iuse_actor
          */
         bool need_sunlight = false;
 
+        /** Tool qualities needed, e.g. "fine bolt turning 1". **/
+        std::map<quality_id, int> qualities_needed;
+
         enum class start_type : int {
             NONE,
             FIRE,
@@ -572,7 +567,6 @@ class salvage_actor : public iuse_actor
 
         ~salvage_actor() override = default;
         void load( const JsonObject &obj, const std::string & ) override;
-        std::optional<int> use( Character *, item &, const tripoint_bub_ms & ) const override;
         std::optional<int> use( Character *, item &, map *here, const tripoint_bub_ms & ) const override;
         std::unique_ptr<iuse_actor> clone() const override;
     private:

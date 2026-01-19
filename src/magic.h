@@ -235,6 +235,12 @@ class spell_type
         // list of additional "spell effects"
         std::vector<fake_spell> additional_spells;
 
+        int channelling_turns = 0;
+        std::string channel_spell;
+        std::string channel_end_spell;
+        std::string channel_interrupt_spell;
+        bool channel_uses_energy = true;
+
         // if the spell has a field name defined, this is where it is
         std::optional<field_type_id> field = std::nullopt;
         // the chance one_in( field_chance ) that the field spawns at a tripoint in the area of the spell
@@ -593,6 +599,7 @@ class spell
         bool has_flag( const spell_flag &flag ) const;
         bool has_flag( const std::string &flag ) const;
         bool no_hands() const;
+        bool is_channeling_spell() const;
         // check if the spell's class is the same as input
         bool is_spell_class( const trait_id &mid ) const;
 
@@ -736,9 +743,9 @@ class known_magic
         void forget_spell( const spell_id &sp );
         void set_spell_level( const spell_id &, int, const Character * );
         void set_spell_exp( const spell_id &, int, const Character * );
-        // time in moves for the Character to memorize the spell
-        int time_to_learn_spell( const Character &guy, const spell_id &sp ) const;
-        int time_to_learn_spell( const Character &guy, const std::string &str ) const;
+        // time for the Character to memorize the spell
+        time_duration time_to_learn_spell( const Character &guy, const spell_id &sp ) const;
+        time_duration time_to_learn_spell( const Character &guy, const std::string &str ) const;
         bool can_learn_spell( const Character &guy, const spell_id &sp, bool improved_spell = false ) const;
         bool knows_spell( const std::string &sp ) const;
         bool knows_spell( const spell_id &sp ) const;
@@ -773,6 +780,8 @@ class known_magic
         void clear_opens_spellbook_data();
         // uses data received from EoC
         void evaluate_opens_spellbook_data();
+        void channel_magic( Character &guy );
+        void break_channeling( Character &guy );
 
         void on_mutation_gain( const trait_id &mid, Character &guy );
         void on_mutation_loss( const trait_id &mid, Character &guy );
@@ -796,6 +805,8 @@ class known_magic
 
         void toggle_favorite( const spell_id &sp );
         bool is_favorite( const spell_id &sp );
+
+        void migrate_spells();
     private:
         // gets length of longest spell name
         int get_spellname_max_width();
@@ -991,6 +1002,21 @@ struct area_expander {
     void sort_ascending();
 
     void sort_descending();
+};
+
+class spell_migration
+{
+    public:
+        spell_id id_old;
+        std::optional<spell_id> id_new;
+
+        static void load( const JsonObject &jo );
+
+        static void reset();
+
+        static void check();
+
+        static const spell_migration *find_migration( const spell_id &original );
 };
 
 #endif // CATA_SRC_MAGIC_H

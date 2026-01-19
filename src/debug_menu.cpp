@@ -71,6 +71,7 @@
 #include "input.h"
 #include "input_context.h"
 #include "input_enums.h"
+#include "input_popup.h"
 #include "inventory.h"
 #include "item.h"
 #include "item_location.h"
@@ -116,7 +117,6 @@
 #include "sounds.h"
 #include "stomach.h"
 #include "string_formatter.h"
-#include "string_input_popup.h"
 #include "talker.h"
 #include "tgz_archiver.h"
 #include "timed_event.h"
@@ -284,6 +284,7 @@ std::string enum_to_string<debug_menu::debug_menu_index>( debug_menu::debug_menu
         case debug_menu::debug_menu_index::EXPORT_FOLLOWER: return "EXPORT_FOLLOWER";
         case debug_menu::debug_menu_index::EXPORT_SELF: return "EXPORT_SELF";
 		case debug_menu::debug_menu_index::QUICK_SETUP: return "QUICK_SETUP";
+		case debug_menu::debug_menu_index::QUICK_SETUP_FLAG_DIRTY: return "QUICK_SETUP_FLAG_DIRTY";
 		case debug_menu::debug_menu_index::TOGGLE_SETUP_MUTATION: return "TOGGLE_SETUP_MUTATION";
 		case debug_menu::debug_menu_index::NORMALIZE_BODY_STAT: return "NORMALIZE_BODY_STAT";
 		case debug_menu::debug_menu_index::SIX_MILLION_DOLLAR_SURVIVOR: return "SIX_MILLION_DOLLAR_SURVIVOR";
@@ -390,7 +391,7 @@ bool _trim_mapbuffer( std::filesystem::path const &dep, rdi_t &iter,
 {
     // discard map memory outside of current region and adjacent regions
     if( dep.parent_path().extension() == std::filesystem::u8path( ".mm1" ) ) {
-        if( dep.has_extension() && dep.extension() == ".zzip" ) { // NOLINT(cata-u8-path)
+        if( dep.has_extension() && dep.extension() == zzip_suffix ) { // NOLINT(cata-u8-path)
             // Compressed map memory has to be handled separately
             return false;
         }
@@ -403,7 +404,7 @@ bool _trim_mapbuffer( std::filesystem::path const &dep, rdi_t &iter,
     if( dep.parent_path().filename() == std::filesystem::u8path( "maps" ) ) {
         std::filesystem::path map_folder = dep.filename();
         std::string map_coords;
-        if( map_folder.extension().string() == ".zzip" ) {
+        if( map_folder.extension().string() == zzip_suffix ) {
             map_coords = map_folder.stem().string();
         } else {
             map_coords = map_folder.filename().string();
@@ -418,7 +419,7 @@ bool _trim_mapbuffer( std::filesystem::path const &dep, rdi_t &iter,
 
 bool _trim_overmapbuffer( std::filesystem::path const &dep, tripoint_range<tripoint> const &oms )
 {
-    std::string const fname = dep.extension() == ".zzip" ?  // NOLINT(cata-u8-path)
+    std::string const fname = dep.extension() == zzip_suffix ?  // NOLINT(cata-u8-path)
                               dep.filename().replace_extension( "" ).generic_u8string() : // NOLINT(cata-u8-path)
                               dep.filename().generic_u8string();
 
@@ -479,7 +480,7 @@ void write_min_archive()
                     }
                 }
                 std::filesystem::path min_mmr_save_rel = ( std::filesystem::path{ entry_filename } / // NOLINT(cata-u8-path)
-                        entry_filename ).concat( ".cold.zzip" ); // NOLINT(cata-u8-path)
+                        entry_filename ).concat( ".cold" + std::string( zzip_suffix ) ); // NOLINT(cata-u8-path)
                 std::filesystem::path min_mmr_temp_zzip_path = ( PATH_INFO::world_base_save_path() /
                         min_mmr_save_rel +
                         ".temp" ).get_unrelative_path();
@@ -683,13 +684,9 @@ static void monster_ammo_edit( monster &mon )
 
 static std::string query_var_value_text()
 {
-    std::string value;
-    string_input_popup popup_val;
-    popup_val
-    .title( _( "Text value:" ) )
-    .width( 85 )
-    .edit( value );
-    return value;
+    string_input_popup_imgui popup_val( 85 );
+    popup_val.set_label( _( "Text value:" ) );
+    return popup_val.query();
 }
 
 static void edit_vars( std::string const &title, global_variables::impl_t &vars )
@@ -721,11 +718,9 @@ static void edit_vars( std::string const &title, global_variables::impl_t &vars 
     int selected_globvar = global_var_list.ret;
     if( selected_globvar == 0 ) {
         std::string key;
-        string_input_popup popup_key;
-        popup_key
-        .title( _( "Key\n" ) )
-        .width( 85 )
-        .edit( key );
+        string_input_popup_imgui popup_key( 85 );
+        popup_key.set_label( _( "Key\n" ) );
+        key = popup_key.query();
         if( query_yn( "Is the value a number or a text?  [Y]es for number, [N]o for text." ) ) {
             int value;
             query_int( value, false, "Numeric value:" );
@@ -1095,6 +1090,7 @@ static int quick_setup_uilist()
 {
     const std::vector<uilist_entry> uilist_initializer = {
         { uilist_entry( debug_menu_index::QUICK_SETUP, true, 'Q', _( "Quick setup…" ) ) },
+        { uilist_entry( debug_menu_index::QUICK_SETUP_FLAG_DIRTY, true, 'D', _( "Quick setup and flag save as dirty" ) ) },
         { uilist_entry( debug_menu_index::TOGGLE_SETUP_MUTATION, true, 't', _( "Toggle debug mutations" ) ) },
         { uilist_entry( debug_menu_index::NORMALIZE_BODY_STAT, true, 'n', _( "Normalize body stats" ) ) },
         { uilist_entry( debug_menu_index::SIX_MILLION_DOLLAR_SURVIVOR, true, 'B', _( "Install ALL bionics" ) ) },
@@ -1724,11 +1720,10 @@ static void change_spells( Character &character )
             break;
 
         } else if( action == "FILTER" ) {
-            string_input_popup()
-            .title( _( "Filter:" ) )
-            .width( 16 )
-            .description( _( "Filter by spell name or id" ) )
-            .edit( filterstring );
+            string_input_popup_imgui filter_popup( 45, filterstring );
+            filter_popup.set_label( _( "Filter:" ) );
+            filter_popup.set_description( _( "Filter by spell name or id" ) );
+            filterstring = filter_popup.query();
 
             showing_only_learned = false;
             filter_spells( );
@@ -1869,8 +1864,14 @@ static void teleport_overmap( bool specific_coordinates = false )
     Character &player_character = get_player_character();
     std::optional<tripoint_abs_omt> where;
     if( specific_coordinates ) {
-        where = string_input_popup().title( _( "Teleport where?" ) ).width(
-                    20 ).query_coordinate_abs_impl();
+        string_input_popup_imgui coord_popup( 65, "", _( "Teleport where?" ) );
+        tripoint_abs_om om_coord;
+        point_om_omt om_tile;
+        std::tie( om_coord, om_tile ) = project_remain<coords::om>( player_character.pos_abs_omt() );
+        coord_popup.set_description( string_format(
+                                         _( "Format: %d'%d,%d'%d,%d (current location)\nThe explicit subcoordinates after the ' are optional." ),
+                                         om_coord.x(), om_tile.x(), om_coord.y(), om_tile.y(), om_coord.z() ) );
+        where = coord_popup.query_coordinate();
     } else {
         const std::optional<tripoint_rel_ms> dir_ = choose_direction(
                     _( "Where is the desired overmap?" ) );
@@ -2279,24 +2280,20 @@ static void character_edit_desc_menu( Character &you )
     switch( smenu.ret ) {
         case 0: {
             std::string filterstring = get_avatar().get_save_id();
-            string_input_popup popup;
-            popup
-            .title( _( "Rename save file (WARNING: this will duplicate the save):" ) )
-            .width( 85 )
-            .edit( filterstring );
-            if( popup.confirmed() ) {
+            string_input_popup_imgui popup( 85, filterstring );
+            popup.set_label( _( "Rename save file (WARNING: this will duplicate the save):" ) );
+            filterstring = popup.query();
+            if( !popup.cancelled() ) {
                 get_avatar().set_save_id( filterstring );
             }
         }
         break;
         case 1: {
             std::string filterstring = you.name;
-            string_input_popup popup;
-            popup
-            .title( _( "Rename character:" ) )
-            .width( 85 )
-            .edit( filterstring );
-            if( popup.confirmed() ) {
+            string_input_popup_imgui popup( 85, filterstring );
+            popup.set_label( _( "Rename character:" ) );
+            filterstring = popup.query();
+            if( !popup.cancelled() ) {
                 you.name = filterstring;
             }
         }
@@ -3852,12 +3849,10 @@ static void vehicle_battery_charge()
     }
 
     int amount = 0;
-    string_input_popup popup;
-    popup
-    .title( _( "By how much?  (in kJ, negative to discharge)" ) )
-    .width( 30 )
-    .edit( amount );
-    if( !popup.canceled() ) {
+    number_input_popup<int> popup( 50, 0, "Charge Battery" );
+    popup.set_description( _( "By how much?  (in kJ, negative to discharge)" ) );
+    amount = popup.query();
+    if( !popup.cancelled() ) {
         vehicle &veh = v_part_pos->vehicle();
         if( amount >= 0 ) {
             veh.charge_battery( here, amount, false );
@@ -3874,10 +3869,12 @@ static void vehicle_export()
     if( optional_vpart_position ovp = here.veh_at( get_avatar().pos_abs() ) ) {
         cata_path export_dir{ cata_path::root_path::user,  "export_dir" };
         assure_dir_exist( export_dir );
-        const std::string text = string_input_popup()
-                                 .title( _( "Exported file name?" ) )
-                                 .width( 20 )
-                                 .query_string();
+        string_input_popup_imgui file_popup( 50, "", _( "Export vehicle" ) );
+        file_popup.set_description( _( "Exported file name?" ) );
+        const std::string text = file_popup.query();
+        if( file_popup.cancelled() || text.empty() ) {
+            return;
+        }
         cata_path veh_path = export_dir / ( text + ".json" );
         try {
             write_to_file( veh_path, [&]( std::ostream & fout ) {
@@ -3885,11 +3882,11 @@ static void vehicle_export()
                 ovp->vehicle().refresh( );
                 vehicle_prototype::save_vehicle_as_prototype( ovp->vehicle(), jsout );
             } );
+            popup( _( "Written: %s .\n Please format the exported file for readability." ),
+                   veh_path.get_unrelative_path().string() );
         } catch( const std::exception &err ) {
             debugmsg( _( "Failed to export vehicle: %s" ), err.what() );
         }
-        popup( _( "Written: %s .\n Please format the exported file for readability." ),
-               veh_path.get_unrelative_path().string() );
         return;
     }
     add_msg( m_bad, _( "There's no vehicle there." ) );
@@ -3968,11 +3965,13 @@ static void wind_speed()
 //prints overmaps in provided bounds, saves to file, copies to clipboard
 static void print_overmaps()
 {
-    std::optional<tripoint_abs_omt> p1 = string_input_popup().title( _( "Top-left point?" ) ).width(
-            20 ).query_coordinate_abs_impl();
+    string_input_popup_imgui pop1( 50 );
+    pop1.set_description( _( "Top-left point?" ) );
+    std::optional<tripoint_abs_omt> p1 = pop1.query_coordinate();
     if( !!p1 ) {
-        std::optional<tripoint_abs_omt> p2 = string_input_popup().title( _( "Bottom-right point?" ) ).width(
-                20 ).query_coordinate_abs_impl();
+        string_input_popup_imgui pop2( 50 );
+        pop2.set_description( _( "Bottom-right point?" ) );
+        std::optional<tripoint_abs_omt> p2 = pop2.query_coordinate();
         if( !!p2 ) {
             if( p1->z() != p2->z() ) {
                 popup( _( "z-values must match!  (provided %d, %d)" ), p1->z(), p2->z() );
@@ -4071,14 +4070,11 @@ static void write_global_vars()
     popup( _( "Var list written to var_list.output" ) );
 }
 
-void do_debug_quick_setup()
+void do_debug_quick_setup( bool flag_dirty )
 {
-    if( !debug_mode ) {
-        // Turn on debug mode if not already on, but without any filters enabled (to prevent log spam).
-        // Save a few keypresses.
-        debug_mode = true;
-        debugmode::enabled_filters.clear();
-    }
+    // Turn on debug mode. Some debug information displays require just this to be on, so we want it on. Save a few keypresses.
+    debug_mode = true;
+
     Character &u = get_avatar();
     normalize_body( u );
     // Specifically only adds mutations instead of toggling them.
@@ -4091,6 +4087,9 @@ void do_debug_quick_setup()
         u.set_skill_level( pair.first, 10 );
     }
     map_reveal( static_cast<int>( om_vision_level::full ) );
+    if( flag_dirty ) {
+        g->save_is_dirty = true;
+    }
 }
 
 void debug()
@@ -4469,8 +4468,9 @@ void debug()
             break;
         case debug_menu_index::QUICKLOAD:
             if( query_yn(
-                    _( "Quickload without saving?  This may cause issues such as duplicated or missing items and vehicles!" ) ) ) {
+                    _( "Quickload without saving?  This will mark save as 'dirty' and disable future saving to prevent accidental overwriting save.  Also this may cause issues such as duplicated or missing items and vehicles!" ) ) ) {
                 g->quickload();
+                g->save_is_dirty = true;
             }
             break;
         case debug_menu_index::TEST_WEATHER: {
@@ -4580,6 +4580,11 @@ void debug()
 
         case debug_menu_index::QUICK_SETUP: {
             do_debug_quick_setup();
+            break;
+        }
+
+        case debug_menu_index::QUICK_SETUP_FLAG_DIRTY: {
+            do_debug_quick_setup( true );
             break;
         }
 

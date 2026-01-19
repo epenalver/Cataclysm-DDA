@@ -28,6 +28,7 @@
 #include "global_vars.h"
 #include "item.h"
 #include "item_pocket.h"
+#include "item_transformation.h"
 #include "iuse.h" // use_function
 #include "mapdata.h"
 #include "proficiency.h"
@@ -255,7 +256,7 @@ struct islot_comestible {
 
 struct islot_brewable {
     /** What are the results of fermenting this item? */
-    std::map<itype_id, int> results;
+    std::map<std::pair<itype_id, std::string>, int> results;
 
     /** How long for this brew to ferment. */
     time_duration time = 0_turns;
@@ -266,7 +267,7 @@ struct islot_brewable {
 
 struct islot_compostable {
     /** What are the results of fermenting this item? */
-    std::map<itype_id, int> results;
+    std::map<std::pair<itype_id, std::string>, int> results;
 
     /** How long for this compost to ferment. */
     time_duration time = 0_turns;
@@ -392,7 +393,7 @@ struct armor_portion_data {
     // if this item only conflicts with rigid items that share a direct layer with it
     bool rigid_layer_only = false;
 
-    // if this item is comfortable to wear without other items bellow it
+    // if this item is comfortable to wear without other items below it
     bool comfortable = false; // NOLINT(cata-serialize)
 
     /**
@@ -906,7 +907,7 @@ struct islot_gunmod : common_ranged_data {
     /**
     * If the target has not appeared in the scope, the aiming speed is relatively low.
     * When the target appears in the scope, the aiming speed will be greatly accelerated.
-    * FoV uses a more realistic method to reflect the aiming speed of the sight to insteadthe original abstract aim_speed
+    * FoV uses a more realistic method to reflect the aiming speed of the sight instead of the original abstract aim_speed
     */
     int field_of_view = -1;
 
@@ -977,7 +978,7 @@ struct islot_gunmod : common_ranged_data {
     /** Additional gunmod slots to add to the gun */
     std::map<gunmod_location, int> add_mod;
 
-    // wheter the item is supposed to work as a bayonet when attached
+    // whether the item is supposed to work as a bayonet when attached
     bool is_bayonet = false;
 
     /** if the item is visible and selectable in the inventory menu
@@ -1478,16 +1479,19 @@ struct itype {
         // Type of the variant - so people can turn off certain types of variants
         itype_variant_kind variant_kind = itype_variant_kind::last;
 
+        // return translated names of all variants this itype can have, if it's weight is > 0
+        std::set<std::string> all_variant_names() const;
+
         phase_id phase = phase_id::SOLID; // e.g. solid, liquid, gas
 
         /** If positive starts countdown to countdown_action at item creation */
         time_duration countdown_interval = 0_seconds;
 
         /**
-        * If set the item will revert to this after countdown. If not set the item is deleted.
+        * If set the item will transform to this after countdown. If not set the item is deleted.
         * Tools revert to this when they run out of charges
         */
-        std::optional<itype_id> revert_to;
+        std::optional<item_transformation> transform_into;
 
         /**
         * Space occupied by items of this type
@@ -1521,7 +1525,7 @@ struct itype {
         /** Value after the Cataclysm, dependent upon practical usages. Price given is for a default-sized stack. */
         units::money price_post = -1_cent;
 
-        // TODO: Add some very basic unweildiness calc for non specified to_hit?
+        // TODO: Add some very basic unwieldiness calc for non specified to_hit?
         int m_to_hit = -2;  // To-hit bonus for melee combat, see GAME_BALANCE.md#to-hit-value
         // itype specifies a legacy raw int to_hit, for use with for item_new_to_hit_enforcement TEST_CASE
         bool using_legacy_to_hit = false;
@@ -1531,9 +1535,9 @@ struct itype {
         nc_color color = c_white; // Color on the map (color.h)
 
         /**
-        * How much insulation this item provides, either as a container, or as
-        * a vehicle base part.  Larger means more insulation, less than 1 but
-        * greater than zero, transfers faster, cannot be less than zero.
+        * How much insulation this item provides, as a vehicle base part.
+        * Larger means more insulation, less than 1 but greater than zero,
+        * transfers faster, cannot be less than zero.
         */
         float insulation_factor = 1.0f;
 

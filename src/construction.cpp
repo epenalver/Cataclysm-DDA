@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "action.h"
+#include "activity_actor_definitions.h"
 #include "avatar.h"
 #include "build_reqs.h"
 #include "calendar.h"
@@ -84,7 +85,6 @@
 
 class read_only_visitable;
 
-static const activity_id ACT_BUILD( "ACT_BUILD" );
 static const activity_id ACT_MULTIPLE_CONSTRUCTION( "ACT_MULTIPLE_CONSTRUCTION" );
 
 static const construction_category_id construction_category_ALL( "ALL" );
@@ -322,7 +322,7 @@ constructions_by_filter( std::function<bool( construction const & )> const &filt
 
 static void load_available_constructions( std::vector<construction_group_str_id> &available,
         std::map<construction_category_id, std::vector<construction_group_str_id>> &cat_available,
-        bool hide_unconstructable )
+        int filter_mode )
 {
     cat_available.clear();
     available.clear();
@@ -332,19 +332,35 @@ static void load_available_constructions( std::vector<construction_group_str_id>
     }
     avatar &player_character = get_avatar();
     for( construction &it : constructions ) {
-        if( it.on_display && ( !hide_unconstructable ||
-                               player_can_build( player_character, player_character.crafting_inventory(), it ) ) ) {
-            bool already_have_it = false;
-            for( auto &avail_it : available ) {
-                if( avail_it == it.group ) {
-                    already_have_it = true;
-                    break;
-                }
+        if( !it.on_display ) {
+            continue;
+        }
+        bool ok = false;
+        // filter_mode: 0 = all,
+        // 1 = ready (skills & materials satisfied, but location not satisfied),
+        // 2 = buildable here (skills & materials satisfied and location satisfied)
+        if( filter_mode == 0 ) {
+            ok = true;
+        } else if( filter_mode == 1 ) {
+            ok = player_can_build( player_character, player_character.crafting_inventory(), it, true ) &&
+                 !can_construct( it );
+        } else if( filter_mode == 2 ) {
+            ok = player_can_build( player_character, player_character.crafting_inventory(), it, true ) &&
+                 can_construct( it );
+        }
+        if( !ok ) {
+            continue;
+        }
+        bool already_have_it = false;
+        for( auto &avail_it : available ) {
+            if( avail_it == it.group ) {
+                already_have_it = true;
+                break;
             }
-            if( !already_have_it ) {
-                available.push_back( it.group );
-                cat_available[it.category].push_back( it.group );
-            }
+        }
+        if( !already_have_it ) {
+            available.push_back( it.group );
+            cat_available[it.category].push_back( it.group );
         }
     }
 }
@@ -488,11 +504,13 @@ construction_id construction_menu( const bool blueprint )
         debugmsg( "construction_menu called before finalization" );
         return construction_id( -1 );
     }
-    static bool hide_unconstructable = false;
+    // filter_mode: 0 = all, 1 = ready (skills & materials satisfied, but location not satisfied),
+    // 2 = buildable here (skills & materials satisfied and location satisfied)
+    static int filter_mode = 0;
     // only display constructions the player can theoretically perform
     std::vector<construction_group_str_id> available;
     std::map<construction_category_id, std::vector<construction_group_str_id>> cat_available;
-    load_available_constructions( available, cat_available, hide_unconstructable );
+    load_available_constructions( available, cat_available, filter_mode );
 
     if( available.empty() ) {
         popup( _( "You can not construct anything here." ) );
@@ -594,8 +612,18 @@ construction_id construction_menu( const bool blueprint )
                  it != options.end(); ++it ) {
                 stage_counter++;
                 construction *current_con = *it;
-                if( hide_unconstructable && !can_construct( *current_con ) ) {
-                    continue;
+                if( filter_mode == 1 ) {
+                    // show stages where skills & materials are satisfied but location is not
+                    if( !( player_can_build( player_character, total_inv, *current_con, true ) &&
+                           !can_construct( *current_con ) ) ) {
+                        continue;
+                    }
+                } else if( filter_mode == 2 ) {
+                    // show stages that are buildable here (skills & materials + location)
+                    if( !( player_can_build( player_character, total_inv, *current_con, true ) &&
+                           can_construct( *current_con ) ) ) {
+                        continue;
+                    }
                 }
                 // Update the cached availability of components and tools in the requirement object
                 current_con->requirements->can_make_with_inventory( total_inv, is_crafting_component, 1,
@@ -983,15 +1011,19 @@ construction_id construction_menu( const bool blueprint )
                                             ctxt.get_desc( "RIGHT" ) ) );
             notes.push_back( string_format( _( "Press [<color_yellow>%s</color>] to search." ),
                                             ctxt.get_desc( "FILTER" ) ) );
-            if( !hide_unconstructable ) {
-                notes.push_back( string_format(
-                                     _( "Press [<color_yellow>%s</color>] to hide unavailable constructions." ),
-                                     ctxt.get_desc( "TOGGLE_UNAVAILABLE_CONSTRUCTIONS" ) ) );
+            // show the current filter mode in the notes area
+            std::string mode_name;
+            if( filter_mode == 0 ) {
+                mode_name = _( "All" );
+            } else if( filter_mode == 1 ) {
+                mode_name = _( "Ready (missing location)" );
             } else {
-                notes.push_back( string_format(
-                                     _( "Press [<color_red>%s</color>] to show unavailable constructions." ),
-                                     ctxt.get_desc( "TOGGLE_UNAVAILABLE_CONSTRUCTIONS" ) ) );
+                mode_name = _( "Buildable here" );
             }
+            notes.push_back( string_format(
+                                 _( "Filter: %s — Press [<color_yellow>%s</color>] to cycle." ),
+                                 colorize( mode_name, c_light_green ),
+                                 ctxt.get_desc( "TOGGLE_UNAVAILABLE_CONSTRUCTIONS" ) ) );
             notes.push_back( string_format(
                                  _( "Press [<color_yellow>%s</color>] to view and edit keybindings." ),
                                  ctxt.get_desc( "HELP_KEYBINDINGS" ) ) );
@@ -1057,9 +1089,12 @@ construction_id construction_menu( const bool blueprint )
         } else if( action == "TOGGLE_UNAVAILABLE_CONSTRUCTIONS" ) {
             update_info = true;
             update_cat = true;
-            hide_unconstructable = !hide_unconstructable;
+            // cycle through filter modes: 0 -> 1 -> 2 -> 0
+            filter_mode = ( filter_mode + 1 ) % 3;
             offset = 0;
-            load_available_constructions( available, cat_available, hide_unconstructable );
+            load_available_constructions( available, cat_available, filter_mode );
+            // force main UI to refresh so the notes update immediately
+            g->invalidate_main_ui_adaptor();
         } else if( action == "CONFIRM" ) {
             if( constructs.empty() || select >= static_cast<int>( constructs.size() ) ) {
                 // Nothing to be done here
@@ -1403,31 +1438,30 @@ void place_construction( std::vector<construction_group_str_id> const &groups )
     }
     player_character.invalidate_crafting_inventory();
     player_character.invalidate_weight_carried_cache();
-    player_character.assign_activity( ACT_BUILD );
-    player_character.activity.placement = here.get_abs( pnt );
+    player_character.assign_activity( build_construction_activity_actor( here.get_abs( pnt ) ) );
 }
 
-void complete_construction( Character *you )
+void build_construction_activity_actor::complete_construction( player_activity &act,
+        Character &you )
 {
     if( !finalized ) {
         debugmsg( "complete_construction called before finalization" );
         return;
     }
     map &here = get_map();
-    const tripoint_bub_ms terp = here.get_bub( you->activity.placement );
+    const tripoint_bub_ms terp = here.get_bub( construction_location );
     partial_con *pc = here.partial_con_at( terp );
     if( !pc ) {
         debugmsg( "No partial construction found at activity placement in complete_construction()" );
-        if( you->is_npc() ) {
-            npc *guy = dynamic_cast<npc *>( you );
-            guy->current_activity_id = activity_id::NULL_ID();
-            guy->revert_after_activity();
-            guy->set_moves( 0 );
+        if( you.is_npc() ) {
+            npc &guy = dynamic_cast<npc & >( you );
+            guy.current_activity_id = activity_id::NULL_ID();
+            guy.revert_after_activity();
+            guy.set_moves( 0 );
         }
         return;
     }
     const construction &built = pc->id.obj();
-    you->activity.str_values.emplace_back( built.str_id );
     const auto award_xp = [&]( Character & practicer ) {
         for( const auto &pr : built.required_skills ) {
             practicer.practice( pr.first, static_cast<int>( ( 10 + 15 * pr.second ) *
@@ -1436,10 +1470,10 @@ void complete_construction( Character *you )
         }
     };
 
-    award_xp( *you );
+    award_xp( you );
     // Other friendly Characters gain exp from assisting or watching...
     // TODO: Characters watching other Characters do stuff and learning from it
-    if( you->is_avatar() ) {
+    if( you.is_avatar() ) {
         for( Character *elem : get_avatar().get_crafting_helpers() ) {
             if( elem->meets_skill_requirements( built ) ) {
                 add_msg( m_info, _( "%s assists you with the work…" ), elem->get_name() );
@@ -1490,30 +1524,30 @@ void complete_construction( Character *you )
 
     // Spawn byproducts
     if( built.byproduct_item_group ) {
-        here.spawn_items( you->pos_bub(), item_group::items_from( *built.byproduct_item_group,
+        here.spawn_items( you.pos_bub(), item_group::items_from( *built.byproduct_item_group,
                           calendar::turn ) );
     }
 
-    add_msg( m_info, _( "%s finished construction: %s." ), you->disp_name( false, true ),
+    add_msg( m_info, _( "%s finished construction: %s." ), you.disp_name( false, true ),
              built.group->name() );
     // clear the activity
-    you->activity.set_to_null();
-    you->recoil = MAX_RECOIL;
+    act.set_to_null();
+    you.recoil = MAX_RECOIL;
 
     // This comes after clearing the activity, in case the function interrupts
     // activities
     if( built.post_specials.size() > 1 ) { // pre-functions
         for( const auto &special : built.post_specials ) {
-            special( terp, *you );
+            special( terp, you );
         }
     } else {
-        built.post_special( terp, *you );
+        built.post_special( terp, you );
     }
     // Players will not automatically resume backlog, other Characters will.
-    if( you->is_avatar() && !you->backlog.empty() &&
-        you->backlog.front().id() == ACT_MULTIPLE_CONSTRUCTION ) {
-        you->backlog.clear();
-        you->assign_activity( ACT_MULTIPLE_CONSTRUCTION );
+    if( you.is_avatar() && !you.backlog.empty() &&
+        you.backlog.front().id() == ACT_MULTIPLE_CONSTRUCTION ) {
+        you.backlog.clear();
+        you.assign_activity( ACT_MULTIPLE_CONSTRUCTION );
     }
 }
 
@@ -1586,7 +1620,7 @@ bool construct::check_support( const tripoint_bub_ms &p )
         }
     }
 
-    //TODO: This doesn't make any sense for the original purpose of check_support and should be seperated
+    //TODO: This doesn't make any sense for the original purpose of check_support and should be separated
 
     // We want to find "walls" below (including windows and doors), but not open rooms and the like.
     if( here.has_flag( ter_furn_flag::TFLAG_SUPPORTS_ROOF, p + tripoint::below ) &&
@@ -1912,7 +1946,7 @@ void construct::done_deconstruct( const tripoint_bub_ms &p, Character &player_ch
             drop = here.spawn_items( p, item_group::items_from( f.deconstruct->drop_group, calendar::turn ) );
         }
 
-        if( f.deconstruct->skill.has_value() ) {
+        if( f.deconstruct && f.deconstruct->skill.has_value() ) {
             deconstruction_practice_skill( f.deconstruct->skill.value() );
         }
         // if furniture has liquid in it and deconstructs into watertight containers then fill them
@@ -2195,12 +2229,12 @@ void construct::do_turn_deconstruct( const tripoint_bub_ms &p, Character &who )
         std::string tname;
         if( here.has_furn( p ) ) {
             const furn_t &f = here.furn( p ).obj();
-            if( f.deconstruct || !f.base_item.is_null() ) {
+            if( f.deconstruct && !f.base_item.is_null() ) {
                 deconstruct_query( f.deconstruct->potential_deconstruct_items( f ) );
             }
         } else {
             const ter_t &t = here.ter( p ).obj();
-            if( t.deconstruct || !t.base_item.is_null() ) {
+            if( t.deconstruct && !t.base_item.is_null() ) {
                 deconstruct_query( t.deconstruct->potential_deconstruct_items( t ) );
             }
         }
